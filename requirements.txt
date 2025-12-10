@@ -10,3 +10,4 @@ python-dotenv
 pymupdf
 bcrypt
 openai
+stripe
