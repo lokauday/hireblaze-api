@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hireblaze Live Interview Copilot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: white;
+      margin: 0;
+      padding: 0;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: auto;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #38bdf8;
+    }
+
+    .question-box {
+      margin-top: 20px;
+    }
+
+    input {
+      width: 100%;
+      padding: 15px;
+      border-radius: 8px;
+      border: none;
+      font-size: 16px;
+    }
+
+    button {
+      margin-top: 10px;
+      width: 100%;
+      padding: 15px;
+      background: #38bdf8;
+      color: black;
+      font-weight: bold;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .answer-box {
+      margin-top: 25px;
+      padding: 20px;
+      background: #020617;
+      border-radius: 10px;
+      min-height: 150px;
+      line-height: 1.5;
+      font-size: 18px;
+    }
+
+    .status {
+      text-align: center;
+      margin-top: 10px;
+      font-size: 14px;
+      color: #22c55e;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>🎤 Hireblaze Interview Copilot</h1>
+
+    <div class="status" id="status">Connecting to Copilot...</div>
+
+    <div class="question-box">
+      <input id="questionInput" type="text" placeholder="Type the interview question here..." />
+      <button onclick="sendQuestion()">Send to Copilot</button>
+    </div>
+
+    <div class="answer-box" id="answerBox">
+      Waiting for answer...
+    </div>
+  </div>
+
+  <script>
+    const socket = new WebSocket("ws://127.0.0.1:8000/ws/copilot");
+
+    socket.onopen = () => {
+      document.getElementById("status").innerText = "✅ Copilot Connected";
+    };
+
+    socket.onmessage = (event) => {
+      document.getElementById("answerBox").innerText = event.data;
+    };
+
+    socket.onerror = () => {
+      document.getElementById("status").innerText = "❌ Connection Error";
+    };
+
+    function sendQuestion() {
+      const input = document.getElementById("questionInput");
+      const question = input.value.trim();
+
+      if (question.length === 0) return;
+
+      socket.send(question);
+      input.value = "";
+      document.getElementById("answerBox").innerText = "Thinking...";
+    }
+  </script>
+
+</body>
+</html>
