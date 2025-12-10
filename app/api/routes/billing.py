@@ -1,42 +1,59 @@
+from fastapi import APIRouter, Request
 import stripe
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-
-from app.core.config import STRIPE_SECRET_KEY
-from app.db.session import SessionLocal
-from app.db.models.subscription import Subscription
-from app.db.models.user import User
-from app.core.auth_dependency import get_current_user
-
-stripe.api_key = STRIPE_SECRET_KEY
+import os
 
 router = APIRouter(prefix="/billing", tags=["Billing"])
 
-def get_db():
-    db = SessionLocal()
+# Load Stripe secret from Railway environment
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+# ✅ HEALTH CHECK FOR BILLING
+@router.get("/status")
+def billing_status():
+    return {"status": "billing service active"}
+
+# ✅ CREATE CHECKOUT SESSION
+@router.post("/create-checkout-session")
+def create_checkout():
     try:
-        yield db
-    finally:
-        db.close()
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            mode="subscription",
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {"name": "Hireblaze Pro"},
+                        "unit_amount": 999,
+                        "recurring": {"interval": "month"},
+                    },
+                    "quantity": 1,
+                }
+            ],
+            success_url="https://your-frontend-url/success",
+            cancel_url="https://your-frontend-url/cancel",
+        )
 
-@router.post("/checkout")
-def create_checkout(plan: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+        return {"checkout_url": session.url}
 
-    PRICE_MAP = {
-        "pro": "price_PRO_ID",
-        "elite": "price_ELITE_ID",
-        "recruiter": "price_RECRUITER_ID"
-    }
+    except Exception as e:
+        return {"error": str(e)}
 
-    price_id = PRICE_MAP.get(plan)
+# ✅ STRIPE WEBHOOK
+@router.post("/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    endpoint_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        mode="subscription",
-        customer_email=user.email,
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url="http://localhost:3000/success",
-        cancel_url="http://localhost:3000/cancel",
-    )
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, endpoint_secret
+        )
+    except Exception as e:
+        return {"error": str(e)}
 
-    return {"checkout_url": session.url}
+    if event["type"] == "checkout.session.completed":
+        print("✅ Payment successful")
+
+    return {"status": "success"}
