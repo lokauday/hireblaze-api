@@ -113,3 +113,16 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 def root():
     return {"status": "Hireblaze API running"}
+
+
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import os
+
+# Serve the static folder
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
+
+@app.get("/pay")
+def serve_payment_page():
+    return FileResponse("frontend/static/copilot.html")
+

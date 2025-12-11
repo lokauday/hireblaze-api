@@ -12,32 +12,29 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 def billing_status():
     return {"status": "billing service active"}
 
-# ✅ CREATE CHECKOUT SESSION
+import stripe
+from fastapi import APIRouter
+from app.core.config import STRIPE_SECRET_KEY, STRIPE_PUBLIC_KEY
+
+router = APIRouter()
+
+stripe.api_key = STRIPE_SECRET_KEY
+
 @router.post("/create-checkout-session")
-def create_checkout():
-    try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            mode="subscription",
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "usd",
-                        "product_data": {"name": "Hireblaze Pro"},
-                        "unit_amount": 999,
-                        "recurring": {"interval": "month"},
-                    },
-                    "quantity": 1,
-                }
-            ],
-            success_url="https://your-frontend-url/success",
-            cancel_url="https://your-frontend-url/cancel",
-        )
+async def create_checkout_session():
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="subscription",
+        line_items=[{
+            "price": "price_1Sd0OfPssaktksvXkv6fN5wG",  # replace with your Stripe price ID
+            "quantity": 1,
+        }],
+        success_url="https://your-railway-url/success",
+        cancel_url="https://your-railway-url/cancel",
+    )
 
-        return {"checkout_url": session.url}
+    return {"sessionId": session.id}
 
-    except Exception as e:
-        return {"error": str(e)}
 
 # ✅ STRIPE WEBHOOK
 @router.post("/webhook")

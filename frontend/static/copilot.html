@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Hireblaze Pro Upgrade</title>
+  <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body style="font-family: Arial; text-align:center; padding-top:80px;">
+
+  <h1>🚀 Upgrade to Hireblaze Pro</h1>
+  <p>Unlock AI Resume, ATS Scoring, Interview Prep</p>
+
+  <button id="payBtn" style="font-size:20px;padding:12px 24px;">
+    Subscribe for $10/month
+  </button>
+
+  <script>
+    const stripe = Stripe("pk_test_REPLACE_WITH_YOUR_PUBLIC_KEY");
+
+    document.getElementById("payBtn").addEventListener("click", async () => {
+      const res = await fetch("/billing/create-checkout-session", {
+        method: "POST"
+      });
+
+      const data = await res.json();
+      stripe.redirectToCheckout({ sessionId: data.sessionId });
+    });
+  </script>
+
+</body>
+</html>
