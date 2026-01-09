@@ -3,17 +3,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 # ✅ Import All API Routes
 from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
+from app.api.routes import billing, billing_webhook, system
+from app.api.routes import documents, jobs, history
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
 from app.services.ai_engine import generate_live_answer
 from app.services.speech_engine import transcribe_audio_chunk
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import billing
-from app.api.routes import application
-from app.api.routes import billing_webhook
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import system
 
 # ✅ Import logging configuration
 from app.core.logging_config import setup_logging
@@ -51,7 +49,7 @@ logger.info("Hireblaze API starting up...")
 @app.on_event("startup")
 async def startup_event():
     """
-    Initialize database tables on startup.
+    Initialize database tables and auth system on startup.
     
     This runs once when the FastAPI application starts (not per request).
     Works for both PostgreSQL (production) and SQLite (local development).
@@ -59,6 +57,17 @@ async def startup_event():
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialization complete")
+    
+    # Initialize auth system (verify bcrypt/passlib is working)
+    try:
+        from app.core.security import hash_password, verify_password
+        # Test password hashing to ensure bcrypt is configured correctly
+        test_hash = hash_password("test_password_123")
+        assert verify_password("test_password_123", test_hash), "Password verification failed"
+        logger.info("Auth system initialized successfully")
+    except Exception as e:
+        logger.error(f"Auth system initialization failed: {e}", exc_info=True)
+        raise
 
 # ✅ CORS LOCKDOWN — ONLY ALLOW YOUR FRONTEND
 app.add_middleware(
@@ -69,7 +78,7 @@ app.add_middleware(
         # "https://hireblaze.ai",     # uncomment when domain is live
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -89,10 +98,16 @@ app.include_router(tailor.router, tags=["AI"])  # Resume tailoring
 app.include_router(interview.router)
 app.include_router(application.router)
 app.include_router(usage.router)  # Usage tracking and quota info
-app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(billing.router)  # Billing (checkout, portal)
 app.include_router(billing_webhook.router)  # Stripe webhooks
 app.include_router(system.router)
+# ✅ New routes for premium features
+app.include_router(documents.router)  # AI Drive - Documents CRUD
+app.include_router(jobs.router)  # Job Tracker
+app.include_router(history.router)  # Activity History
+
+# ✅ Static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 logger.info("All routes registered successfully")
 
@@ -155,12 +170,9 @@ def root():
 
 
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 import os
 
-# Serve the static folder
-app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
-
+# Serve payment page
 @app.get("/pay")
 def serve_payment_page():
     return FileResponse("frontend/static/copilot.html")

@@ -90,8 +90,25 @@ def signup(
                 detail="Password must be 72 characters or fewer"
             )
 
-        # Hash password
-        hashed = hash_password(password)
+        # Hash password with error handling
+        try:
+            hashed = hash_password(password)
+        except ValueError as e:
+            # Password hashing failed (should not happen with validation, but catch for safety)
+            logger.error(f"Password hashing error during signup: {e}, email={email}")
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid password"
+            )
+        except Exception as e:
+            # Unexpected error during password hashing
+            logger.error(f"Unexpected password hashing error during signup: {e}, email={email}", exc_info=True)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid password"
+            )
 
         # Create user
         user = User(
