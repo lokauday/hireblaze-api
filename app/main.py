@@ -18,6 +18,9 @@ from app.api.routes import system
 # ✅ Import logging configuration
 from app.core.logging_config import setup_logging
 
+# ✅ Import database initialization
+from app.db.init_db import init_db
+
 # Setup logging
 setup_logging(log_level="INFO")
 logger = logging.getLogger(__name__)
@@ -39,6 +42,21 @@ app = FastAPI(
 )
 
 logger.info("Hireblaze API starting up...")
+
+
+# ============================================
+# ✅ STARTUP EVENT - Database Initialization
+# ============================================
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize database tables on startup.
+    
+    Only runs for PostgreSQL (production) databases.
+    SQLite tables are created automatically, so we skip this for local development.
+    """
+    init_db()
 
 # ✅ CORS LOCKDOWN — ONLY ALLOW YOUR FRONTEND
 app.add_middleware(
