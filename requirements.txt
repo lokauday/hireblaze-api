@@ -8,6 +8,6 @@ python-multipart
 pydantic
 python-dotenv
 pymupdf
-bcrypt
+bcrypt==4.0.1
 openai
 stripe

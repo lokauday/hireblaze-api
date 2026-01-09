@@ -109,6 +109,7 @@ def test_signup_missing_fields(db: Session):
     )
     
     assert response.status_code == 422  # Validation error
+    assert "detail" in response.json()
 
 
 def test_signup_short_password(db: Session):
@@ -131,8 +132,130 @@ def test_signup_short_password(db: Session):
         headers={"Content-Type": "application/x-www-form-urlencoded"}
     )
     
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert "at least 6 characters" in response.json()["detail"].lower()
+
+
+def test_signup_password_too_long(db: Session):
+    """Test signup with password exceeding 72-byte limit."""
+    test_email = "test_long_pass@example.com"
+    
+    # Clean up
+    existing = db.query(User).filter(User.email == test_email).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+    
+    # Create a password that's 73 bytes when UTF-8 encoded
+    # Each emoji is typically 4 bytes in UTF-8
+    # 18 emojis = 72 bytes, 19 = 76 bytes (over limit)
+    long_password = "a" * 73  # 73 characters = 73 bytes in UTF-8
+    
+    response = client.post(
+        "/auth/signup",
+        data={
+            "full_name": "Test User",
+            "email": test_email,
+            "password": long_password
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    
+    assert response.status_code == 422
+    assert "72 characters or fewer" in response.json()["detail"]
+
+
+def test_signup_password_exactly_72_bytes(db: Session):
+    """Test signup with password exactly 72 bytes (should succeed)."""
+    test_email = "test_72byte_pass@example.com"
+    
+    # Clean up
+    existing = db.query(User).filter(User.email == test_email).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+    
+    # Create a password that's exactly 72 bytes when UTF-8 encoded
+    password_72_bytes = "a" * 72  # 72 characters = 72 bytes in UTF-8
+    
+    response = client.post(
+        "/auth/signup",
+        data={
+            "full_name": "Test User",
+            "email": test_email,
+            "password": password_72_bytes
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    
+    assert response.status_code == 201
+    assert "message" in response.json()
+    
+    # Cleanup
+    user = db.query(User).filter(User.email == test_email).first()
+    if user:
+        db.delete(user)
+        db.commit()
+
+
+def test_signup_password_unicode_72_bytes(db: Session):
+    """Test signup with password containing Unicode that's exactly 72 bytes."""
+    test_email = "test_unicode_72byte@example.com"
+    
+    # Clean up
+    existing = db.query(User).filter(User.email == test_email).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+    
+    # Each emoji is 4 bytes, so 18 emojis = 72 bytes exactly
+    password_unicode = "🚀" * 18  # 18 emojis = 72 bytes in UTF-8
+    
+    response = client.post(
+        "/auth/signup",
+        data={
+            "full_name": "Test User",
+            "email": test_email,
+            "password": password_unicode
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    
+    assert response.status_code == 201
+    assert "message" in response.json()
+    
+    # Cleanup
+    user = db.query(User).filter(User.email == test_email).first()
+    if user:
+        db.delete(user)
+        db.commit()
+
+
+def test_signup_password_unicode_over_72_bytes(db: Session):
+    """Test signup with password containing Unicode exceeding 72 bytes."""
+    test_email = "test_unicode_over@example.com"
+    
+    # Clean up
+    existing = db.query(User).filter(User.email == test_email).first()
+    if existing:
+        db.delete(existing)
+        db.commit()
+    
+    # 19 emojis = 76 bytes (over 72-byte limit)
+    password_unicode = "🚀" * 19  # 19 emojis = 76 bytes in UTF-8
+    
+    response = client.post(
+        "/auth/signup",
+        data={
+            "full_name": "Test User",
+            "email": test_email,
+            "password": password_unicode
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    
+    assert response.status_code == 422
+    assert "72 characters or fewer" in response.json()["detail"]
 
 
 def test_signup_optional_visa_status(db: Session):

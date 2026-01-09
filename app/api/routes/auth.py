@@ -37,13 +37,13 @@ def signup(
     Accepts form-urlencoded data with:
     - full_name: User's full name (required)
     - email: User's email address (required, must be unique)
-    - password: User's password (required, min 6 characters)
+    - password: User's password (required, min 6 characters, max 72 bytes UTF-8)
     - visa_status: User's visa status (optional, defaults to "Citizen")
     
     Returns:
     - 201: User created successfully
     - 409: Email already registered
-    - 400: Invalid input data
+    - 422: Validation error (invalid input data, password too short/long)
     - 500: Server error
     """
     try:
@@ -59,20 +59,35 @@ def signup(
         # Validate input
         if not full_name or not full_name.strip():
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Full name is required"
             )
         
         if not email or not email.strip():
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Email is required"
             )
         
-        if not password or len(password) < 6:
+        # Password validation: min length, max 72 bytes (bcrypt limit)
+        if not password:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Password is required"
+            )
+        
+        if len(password) < 6:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Password must be at least 6 characters"
+            )
+        
+        # Check 72-byte UTF-8 limit (bcrypt hard limit)
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Password must be 72 characters or fewer"
             )
 
         # Hash password
