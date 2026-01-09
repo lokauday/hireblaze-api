@@ -1,10 +1,12 @@
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-# ✅ Import All API Routes
+# ✅ Import All API Routes (explicit imports to avoid import errors)
 from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
 from app.api.routes import billing, billing_webhook, system
-from app.api.routes import documents, jobs, history
+from app.api.routes.documents import router as documents_router
+from app.api.routes.jobs import router as jobs_router
+from app.api.routes.history import router as history_router
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
@@ -102,9 +104,9 @@ app.include_router(billing.router)  # Billing (checkout, portal)
 app.include_router(billing_webhook.router)  # Stripe webhooks
 app.include_router(system.router)
 # ✅ New routes for premium features
-app.include_router(documents.router)  # AI Drive - Documents CRUD
-app.include_router(jobs.router)  # Job Tracker
-app.include_router(history.router)  # Activity History
+app.include_router(documents_router)  # AI Drive - Documents CRUD
+app.include_router(jobs_router)  # Job Tracker
+app.include_router(history_router)  # Activity History
 
 # ✅ Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
