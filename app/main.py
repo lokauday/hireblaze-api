@@ -1,7 +1,8 @@
+import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 # ✅ Import All API Routes
-from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application
+from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
@@ -14,6 +15,13 @@ from app.api.routes import billing_webhook
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import system
 
+# ✅ Import logging configuration
+from app.core.logging_config import setup_logging
+
+# Setup logging
+setup_logging(log_level="INFO")
+logger = logging.getLogger(__name__)
+
 
 
 
@@ -22,7 +30,15 @@ from app.api.routes import system
 # ✅ FASTAPI APP INIT
 # ============================================
 
-app = FastAPI(title="Hireblaze AI")
+app = FastAPI(
+    title="Hireblaze AI",
+    description="AI-powered job application assistant with usage quotas and billing",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+logger.info("Hireblaze API starting up...")
 
 # ✅ CORS LOCKDOWN — ONLY ALLOW YOUR FRONTEND
 app.add_middleware(
@@ -43,19 +59,22 @@ app.add_middleware(
 # ✅ REGISTER ALL ROUTERS
 # ============================================
 
+# ✅ Register API Routes
 app.include_router(auth.router)
 app.include_router(resume.router)
-app.include_router(jd.router)
-app.include_router(ats.router)
-app.include_router(cover_letter.router)
-app.include_router(tailor.router)
+app.include_router(jd.router, tags=["AI"])  # JD parsing
+app.include_router(ats.router, tags=["AI"])  # ATS scoring
+app.include_router(cover_letter.router, tags=["AI"])  # Cover letter generation
+app.include_router(tailor.router, tags=["AI"])  # Resume tailoring
 app.include_router(interview.router)
 app.include_router(application.router)
+app.include_router(usage.router)  # Usage tracking and quota info
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.include_router(billing.router)
-app.include_router(application.router)
-app.include_router(billing_webhook.router)
+app.include_router(billing.router)  # Billing (checkout, portal)
+app.include_router(billing_webhook.router)  # Stripe webhooks
 app.include_router(system.router)
+
+logger.info("All routes registered successfully")
 
 
 

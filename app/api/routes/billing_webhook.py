@@ -1,65 +1,130 @@
-import stripe
-from fastapi import APIRouter, Request, Header
-from sqlalchemy.orm import Session
-from app.core.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
-from app.db.session import SessionLocal
-from app.db.models.subscription import Subscription
-from app.db.models.user import User
+"""
+Stripe webhook handler for subscription events.
 
-stripe.api_key = STRIPE_SECRET_KEY
+Handles webhook events from Stripe to keep subscription state in sync.
+"""
+import logging
+import stripe
+from fastapi import APIRouter, Request, Header, HTTPException, status
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal
+from app.core.config import STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+from app.services.billing_service import (
+    handle_checkout_session_completed,
+    handle_subscription_created,
+    handle_subscription_updated,
+    handle_subscription_deleted
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing", tags=["Billing Webhook"])
 
+# Initialize Stripe
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+
 
 def get_db():
+    """Database session dependency with proper cleanup."""
     db = SessionLocal()
     try:
-        return db
+        yield db
     finally:
         db.close()
 
 
-@router.post("/webhook")
+@router.post("/webhook", status_code=status.HTTP_200_OK)
 async def stripe_webhook(
     request: Request,
-    stripe_signature: str = Header(None),
+    stripe_signature: str = Header(None, alias="stripe-signature"),
 ):
+    """
+    Handle Stripe webhook events.
+    
+    Verifies webhook signature and processes subscription-related events:
+    - checkout.session.completed: Payment successful
+    - customer.subscription.created: New subscription created
+    - customer.subscription.updated: Subscription updated (plan change, renewal, etc.)
+    - customer.subscription.deleted: Subscription canceled or expired
+    
+    Returns 200 OK to acknowledge receipt to Stripe.
+    """
+    # Get raw payload
     payload = await request.body()
-    db: Session = get_db()
-
+    
+    # Get database session
+    db = SessionLocal()
     try:
-        event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=stripe_signature,
-            secret=STRIPE_WEBHOOK_SECRET,
-        )
-    except Exception as e:
-        return {"error": f"Webhook verification failed: {str(e)}"}
-
-    # ✅ PAYMENT COMPLETED EVENT
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-
-        customer_email = session.get("customer_email")
-        subscription_id = session.get("subscription")
-
-        # ✅ Find user by email
-        user = db.query(User).filter(User.email == customer_email).first()
-        if not user:
-            return {"error": "User not found for subscription"}
-
-        sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
-
-        if not sub:
-            sub = Subscription(user_id=user.id)
-            db.add(sub)
-
-        # ✅ Auto-upgrade plan (default Elite for now)
-        sub.plan_type = "elite"
-        sub.status = "active"
-        sub.stripe_subscription_id = subscription_id
-        sub.stripe_customer_id = session.get("customer")
-
-        db.commit()
-
-    return {"status": "success"}
+        # Verify webhook signature
+        if not STRIPE_WEBHOOK_SECRET:
+            logger.error("STRIPE_WEBHOOK_SECRET not configured")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Webhook secret not configured"
+            )
+        
+        if not stripe_signature:
+            logger.warning("Missing stripe-signature header")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing stripe-signature header"
+            )
+        
+        try:
+            event = stripe.Webhook.construct_event(
+                payload=payload,
+                sig_header=stripe_signature,
+                secret=STRIPE_WEBHOOK_SECRET
+            )
+        except ValueError as e:
+            logger.error(f"Invalid payload in webhook: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid payload: {str(e)}"
+            )
+        except stripe.error.SignatureVerificationError as e:
+            logger.error(f"Webhook signature verification failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid signature: {str(e)}"
+            )
+        
+        # Process event based on type
+        event_type = event.get("type")
+        event_data = event.get("data", {}).get("object", {})
+        
+        logger.info(f"Processing webhook event: type={event_type}, id={event.get('id')}")
+        
+        try:
+            if event_type == "checkout.session.completed":
+                subscription = handle_checkout_session_completed(event_data, db)
+                logger.info(f"Checkout completed: user_id={subscription.user_id}, plan={subscription.plan_type}")
+                
+            elif event_type == "customer.subscription.created":
+                subscription = handle_subscription_created(event_data, db)
+                logger.info(f"Subscription created: user_id={subscription.user_id}, plan={subscription.plan_type}")
+                
+            elif event_type == "customer.subscription.updated":
+                subscription = handle_subscription_updated(event_data, db)
+                logger.info(f"Subscription updated: user_id={subscription.user_id}, plan={subscription.plan_type}, status={subscription.status}")
+                
+            elif event_type == "customer.subscription.deleted":
+                subscription = handle_subscription_deleted(event_data, db)
+                logger.info(f"Subscription deleted: user_id={subscription.user_id}, downgraded to free")
+                
+            else:
+                # Unhandled event type - log but don't fail
+                logger.debug(f"Unhandled webhook event type: {event_type}")
+        
+        except Exception as e:
+            logger.error(f"Error processing webhook event {event_type}: {e}", exc_info=True)
+            # Don't raise - we still want to return 200 to Stripe
+            # Stripe will retry if needed
+        
+        # Always return success to Stripe
+        return {"status": "success", "event_type": event_type}
+        
+    finally:
+        db.close()
