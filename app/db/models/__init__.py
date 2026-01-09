@@ -10,7 +10,8 @@ from app.db.models.user import User
 from app.db.models.subscription import Subscription
 from app.db.models.usage import UsageEvent
 from app.db.models.resume import Resume
-from app.db.models.job import JobDescription
+from app.db.models.job import Job, JobDescription
+from app.db.models.document import Document
 from app.db.models.application import Application
 from app.db.models.ats_score import ATSScore
 from app.db.models.candidate_benchmark import CandidateBenchmark
@@ -23,7 +24,9 @@ __all__ = [
     "Subscription",
     "UsageEvent",
     "Resume",
+    "Job",
     "JobDescription",
+    "Document",
     "Application",
     "ATSScore",
     "CandidateBenchmark",
