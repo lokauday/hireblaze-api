@@ -1,12 +1,33 @@
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+# ✅ Import logging configuration first (before other imports that may log)
+from app.core.logging_config import setup_logging
+setup_logging(log_level="INFO")
+logger = logging.getLogger(__name__)
+
 # ✅ Import All API Routes (explicit imports to avoid import errors)
 from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
 from app.api.routes import billing, billing_webhook, system
-from app.api.routes.documents import router as documents_router
-from app.api.routes.jobs import router as jobs_router
-from app.api.routes.history import router as history_router
+
+# ✅ Optional premium feature routes (gracefully handle if not available)
+try:
+    from app.api.routes.documents import router as documents_router
+except ImportError:
+    logger.warning("documents route not available (module not found)")
+    documents_router = None
+
+try:
+    from app.api.routes.jobs import router as jobs_router
+except ImportError:
+    logger.warning("jobs route not available (module not found)")
+    jobs_router = None
+
+try:
+    from app.api.routes.history import router as history_router
+except ImportError:
+    logger.warning("history route not available (module not found)")
+    history_router = None
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
@@ -15,15 +36,8 @@ from app.services.speech_engine import transcribe_audio_chunk
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# ✅ Import logging configuration
-from app.core.logging_config import setup_logging
-
 # ✅ Import database initialization
 from app.db.init_db import init_db
-
-# Setup logging
-setup_logging(log_level="INFO")
-logger = logging.getLogger(__name__)
 
 
 
@@ -103,10 +117,13 @@ app.include_router(usage.router)  # Usage tracking and quota info
 app.include_router(billing.router)  # Billing (checkout, portal)
 app.include_router(billing_webhook.router)  # Stripe webhooks
 app.include_router(system.router)
-# ✅ New routes for premium features
-app.include_router(documents_router)  # AI Drive - Documents CRUD
-app.include_router(jobs_router)  # Job Tracker
-app.include_router(history_router)  # Activity History
+# ✅ New routes for premium features (only if available)
+if documents_router is not None:
+    app.include_router(documents_router)  # AI Drive - Documents CRUD
+if jobs_router is not None:
+    app.include_router(jobs_router)  # Job Tracker
+if history_router is not None:
+    app.include_router(history_router)  # Activity History
 
 # ✅ Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
