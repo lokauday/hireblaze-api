@@ -53,10 +53,12 @@ async def startup_event():
     """
     Initialize database tables on startup.
     
-    Only runs for PostgreSQL (production) databases.
-    SQLite tables are created automatically, so we skip this for local development.
+    This runs once when the FastAPI application starts (not per request).
+    Works for both PostgreSQL (production) and SQLite (local development).
     """
+    logger.info("Initializing database...")
     init_db()
+    logger.info("Database initialization complete")
 
 # ✅ CORS LOCKDOWN — ONLY ALLOW YOUR FRONTEND
 app.add_middleware(
