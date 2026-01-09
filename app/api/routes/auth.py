@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db.session import SessionLocal
 from app.db.models.user import User
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.security import hash_password, verify_password, create_access_token, validate_password
 
 logger = logging.getLogger(__name__)
 
@@ -82,32 +82,35 @@ def signup(
                 detail="Password must be at least 6 characters"
             )
         
-        # Check 72-byte UTF-8 limit (bcrypt hard limit)
-        password_bytes = password.encode('utf-8')
-        if len(password_bytes) > 72:
+        # Validate password length (72-byte bcrypt limit)
+        try:
+            validate_password(password)
+        except ValueError as e:
+            # Password validation failed (too long or invalid)
+            logger.warning(f"Password validation failed during signup: {str(e)}, email={email}")
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Password must be 72 characters or fewer"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password is too long or invalid"
             )
-
+        
         # Hash password with error handling
         try:
             hashed = hash_password(password)
         except ValueError as e:
-            # Password hashing failed (should not happen with validation, but catch for safety)
-            logger.error(f"Password hashing error during signup: {e}, email={email}")
+            # Password hashing failed (validation or bcrypt error)
+            logger.error(f"Password hashing failed during signup: {str(e)}, email={email}")
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid password"
+                detail="Password is too long or invalid"
             )
         except Exception as e:
-            # Unexpected error during password hashing
-            logger.error(f"Unexpected password hashing error during signup: {e}, email={email}", exc_info=True)
+            # Unexpected error during password hashing (should not happen)
+            logger.error(f"Unexpected password hashing error during signup: {type(e).__name__}, email={email}", exc_info=True)
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid password"
+                detail="Password is too long or invalid"
             )
 
         # Create user
