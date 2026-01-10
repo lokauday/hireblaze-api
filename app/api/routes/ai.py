@@ -2,7 +2,7 @@
 AI endpoints for FinalRoundAI++ features.
 """
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -22,6 +22,7 @@ from app.services.ai_service import (
     generate_recruiter_lens,
     generate_interview_pack,
     generate_outreach_message,
+    transform_text,
     MatchScoreResponse,
     RecruiterLensResponse,
     InterviewPackResponse,
@@ -89,6 +90,18 @@ class OutreachRequest(BaseModel):
     company: Optional[str] = Field(None, description="Company name")
     job_title: Optional[str] = Field(None, description="Job title")
     save_to_drive: bool = Field(False, description="Save result as Document in Drive")
+
+
+class TransformRequest(BaseModel):
+    """Request model for text transformation in editor."""
+    mode: str = Field(..., description="Transformation mode: rewrite, shorten, expand, ats_optimize, fix_grammar, add_keywords")
+    text: str = Field(..., min_length=1, description="Markdown content to transform")
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional context: job_title, company, job_description, seniority")
+
+
+class TransformResponse(BaseModel):
+    """Response model for text transformation."""
+    output: str = Field(..., description="Transformed markdown content")
 
 
 # ============================================
@@ -401,4 +414,67 @@ def outreach(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate outreach message"
+        )
+
+
+@router.post("/transform", response_model=TransformResponse)
+def transform(
+    request: TransformRequest = Body(...),
+    email: str = Depends(get_current_user)
+):
+    """
+    Transform text content using AI.
+    
+    Supported modes:
+    - rewrite: Improve clarity and impact
+    - shorten: Make more concise
+    - expand: Add detail with placeholders
+    - ats_optimize: Optimize for ATS systems
+    - fix_grammar: Fix grammar only
+    - add_keywords: Add relevant keywords
+    
+    Requires authentication. Returns transformed markdown.
+    """
+    try:
+        # Validate mode
+        valid_modes = ["rewrite", "shorten", "expand", "ats_optimize", "fix_grammar", "add_keywords"]
+        if request.mode not in valid_modes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid mode. Must be one of: {', '.join(valid_modes)}"
+            )
+        
+        # Validate text length (cap at 50k chars)
+        MAX_LENGTH = 50000
+        if len(request.text) > MAX_LENGTH:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Text too long. Maximum {MAX_LENGTH:,} characters allowed."
+            )
+        
+        # Validate text is not empty
+        if not request.text or not request.text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Text cannot be empty"
+            )
+        
+        # Transform text
+        result = transform_text(
+            mode=request.mode,
+            text=request.text,
+            context=request.context or {}
+        )
+        
+        logger.info(f"Text transformed: mode={request.mode}, user={email}, length={len(result)}")
+        
+        return TransformResponse(output=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in transform endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to transform text"
         )

@@ -451,3 +451,103 @@ Return ONLY valid JSON, no markdown or extra text.
         subject=template.get("subject"),
         tone=template["tone"]
     )
+
+
+def transform_text(mode: str, text: str, context: Dict[str, Any] = None) -> str:
+    """
+    Transform text content using AI based on mode.
+    
+    Uses OpenAI ChatGPT if available, otherwise returns friendly error.
+    
+    Args:
+        mode: Transformation mode (rewrite, shorten, expand, ats_optimize, fix_grammar, add_keywords)
+        text: Text content to transform (markdown)
+        context: Optional context dict with job_title, company, job_description, seniority
+        
+    Returns:
+        Transformed markdown text
+        
+    Raises:
+        HTTPException: 500 if AI not configured (OPENAI_API_KEY missing)
+        HTTPException: 502 if AI call fails
+    """
+    if context is None:
+        context = {}
+    
+    # Check if OpenAI is configured - return clear 500 error if missing
+    if not OPENAI_AVAILABLE or not OPENAI_API_KEY:
+        logger.error("OPENAI_API_KEY not configured - cannot perform AI transformation")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AI not configured"
+        )
+    
+    if client is None:
+        logger.error("OpenAI client not initialized - cannot perform AI transformation")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AI not configured"
+        )
+    
+    # Build system prompt based on mode
+    mode_prompts = {
+        "rewrite": """You are a professional recruiter and resume expert. Rewrite the following text to improve clarity, impact, and professionalism. Use stronger action verbs, quantify achievements where natural, and make it more ATS-friendly. Preserve all markdown formatting. Output ONLY the transformed markdown text, no explanations.""",
+        
+        "shorten": """You are a professional recruiter. Make the following text more concise by removing filler words, redundancy, and unnecessary details while keeping all core facts and achievements. Preserve all markdown formatting. Output ONLY the shortened markdown text, no explanations.""",
+        
+        "expand": """You are a professional recruiter. Expand the following text with more detail and impact. Add [metric] placeholders where numbers would strengthen claims, but DO NOT invent specific facts. Enhance descriptions while maintaining accuracy. Preserve all markdown formatting. Output ONLY the expanded markdown text, no explanations.""",
+        
+        "ats_optimize": """You are an ATS optimization expert. Optimize the following text for applicant tracking systems by improving headings, using standard formatting, naturally incorporating relevant keywords from the context, and structuring content for easy parsing. Preserve markdown structure. Output ONLY the optimized markdown text, no explanations.""",
+        
+        "fix_grammar": """You are a professional copy editor. Fix grammar, spelling, and punctuation errors in the following text. Make minimal edits - only correct errors, don't rewrite. Preserve all markdown formatting and original meaning. Output ONLY the corrected markdown text, no explanations.""",
+        
+        "add_keywords": """You are a professional recruiter. Add relevant skills and keywords to the following text naturally, either by enhancing existing sections or adding a skills section if appropriate. Do not bloat the text - integrate keywords seamlessly. Preserve all markdown formatting. Output ONLY the enhanced markdown text, no explanations."""
+    }
+    
+    system_prompt = mode_prompts.get(mode, mode_prompts["rewrite"])
+    
+    # Build user prompt with context if provided
+    user_prompt = text
+    if context:
+        context_parts = []
+        if context.get("job_title"):
+            context_parts.append(f"Job Title: {context['job_title']}")
+        if context.get("company"):
+            context_parts.append(f"Company: {context['company']}")
+        if context.get("job_description"):
+            context_parts.append(f"Job Description: {context['job_description'][:1000]}")
+        if context.get("seniority"):
+            context_parts.append(f"Seniority Level: {context['seniority']}")
+        
+        if context_parts:
+            user_prompt = f"Context:\n" + "\n".join(context_parts) + "\n\nText to transform:\n" + text
+    
+    # Call OpenAI
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=4000
+        )
+        
+        output = response.choices[0].message.content.strip()
+        
+        # Ensure output is not empty
+        if not output:
+            raise ValueError("AI returned empty response")
+        
+        logger.info(f"Text transformed successfully: mode={mode}, input_len={len(text)}, output_len={len(output)}")
+        return output
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
+        logger.error(f"OpenAI API error in transform_text: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI service temporarily unavailable. Please try again later."
+        )
