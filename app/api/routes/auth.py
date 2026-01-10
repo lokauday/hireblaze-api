@@ -6,6 +6,7 @@ import re
 
 from app.db.session import SessionLocal
 from app.db.models.user import User
+from app.db.models.subscription import Subscription
 from app.core.security import hash_password, verify_password, create_access_token
 from app.schemas.auth import SignupRequest, LoginRequest
 
@@ -96,7 +97,7 @@ async def signup(request: Request, db: Session = Depends(get_db)):
                         }
                     )
                     raise HTTPException(
-                        status_code=400,
+                        status_code=422,
                         detail="; ".join(error_messages) if error_messages else "Validation failed"
                     )
             except ValueError as e:
@@ -183,7 +184,7 @@ async def signup(request: Request, db: Session = Depends(get_db)):
                         }
                     )
                     raise HTTPException(
-                        status_code=400,
+                        status_code=422,
                         detail="; ".join(error_messages) if error_messages else "Validation failed"
                     )
             except HTTPException:
@@ -202,8 +203,8 @@ async def signup(request: Request, db: Session = Depends(get_db)):
         # Check if email already exists
         existing_user = db.query(User).filter(User.email == email_lower).first()
         if existing_user:
-            logger.warning(f"Signup attempt with existing email: {email_lower}")
-            raise HTTPException(status_code=400, detail="Email already registered")
+            logger.warning(f"Signup blocked: email exists - {email_lower}")
+            raise HTTPException(status_code=409, detail="Email already registered. Please log in.")
 
         # Hash password (validation already done by Pydantic)
         try:
@@ -224,7 +225,18 @@ async def signup(request: Request, db: Session = Depends(get_db)):
             db.add(user)
             db.commit()
             db.refresh(user)
-            logger.info(f"User created successfully: {user.id} ({email_lower})")
+            
+            # Get user's plan (default to "free" if no subscription exists)
+            # New users won't have a subscription yet, so default to "free"
+            try:
+                subscription = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+                plan = subscription.plan_type if subscription else "free"
+            except Exception as sub_error:
+                # If subscription query fails, default to "free"
+                logger.warning(f"Could not fetch subscription for new user {user.id}: {sub_error}")
+                plan = "free"
+            
+            logger.info(f"Signup success: user_id={user.id}, email={email_lower}, plan={plan}")
         except Exception as e:
             db.rollback()
             logger.error(f"Database error during signup: {e}", exc_info=True)
@@ -233,11 +245,16 @@ async def signup(request: Request, db: Session = Depends(get_db)):
         # Create access token for immediate login
         token = create_access_token({"sub": user.email})
 
+        # Return response with user object for immediate login
         return {
-            "message": "User created successfully",
-            "user_id": user.id,
             "access_token": token,
-            "token_type": "bearer"
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "plan": plan
+            }
         }
         
     except HTTPException:
