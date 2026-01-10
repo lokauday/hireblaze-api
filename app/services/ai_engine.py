@@ -1,7 +1,36 @@
 from openai import OpenAI
 from app.core.config import OPENAI_API_KEY
+import logging
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI client only if API key is available
+client = None
+if OPENAI_API_KEY:
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    except Exception as e:
+        logger.warning(f"Failed to initialize OpenAI client: {e}")
+        client = None
+else:
+    logger.warning("OPENAI_API_KEY not set. AI features will not be available.")
+
+
+# Helper function for OpenAI API calls
+def call_openai(prompt: str, model: str = "gpt-4o-mini") -> str:
+    """Call OpenAI API with error handling."""
+    if not client:
+        raise ValueError("OpenAI client not initialized. Set OPENAI_API_KEY environment variable.")
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"OpenAI API error: {e}")
+        raise ValueError(f"Failed to generate AI response: {str(e)}")
 
 
 # ✅ JD SKILL EXTRACTION
@@ -11,13 +40,7 @@ Extract all required technical and soft skills from this job description as a cl
 
 {jd_text}
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 # ✅ COVER LETTER GENERATOR
@@ -31,13 +54,7 @@ Resume:
 Job Description:
 {jd_text}
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 # ✅ RESUME TAILORING
@@ -51,13 +68,7 @@ Resume:
 Job Description:
 {jd_text}
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 # ✅ LIVE INTERVIEW ANSWER (COPILOT)
@@ -75,13 +86,7 @@ Candidate Resume:
 Job Description:
 {jd_text}
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 # ✅ STAR FORMATTER
@@ -95,13 +100,7 @@ Question:
 Resume:
 {resume_text}
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 
@@ -132,13 +131,7 @@ Job Description:
 
 Return result in clear structured text.
 """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
+    return call_openai(prompt)
 
 
 def generate_auto_coach_plan(communication, technical, confidence, role_fit):
