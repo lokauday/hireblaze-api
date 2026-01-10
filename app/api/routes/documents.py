@@ -45,6 +45,43 @@ def get_user_from_email(email: str, db: Session) -> User:
     return user
 
 
+def is_binary_content(content: str) -> bool:
+    """
+    Check if content appears to be binary/corrupted data.
+    
+    Returns True if content looks like binary (ZIP files, PDFs, etc.)
+    """
+    if not content:
+        return False
+    
+    # Check for common binary file signatures
+    binary_signatures = [
+        b'PK',  # ZIP files (including .docx, .xlsx)
+        b'\x00',  # Null bytes
+        b'\xff\xd8\xff',  # JPEG
+        b'%PDF',  # PDF
+    ]
+    
+    # Check first 100 bytes for binary patterns
+    content_bytes = content.encode('utf-8', errors='ignore')[:100]
+    
+    # Check for ZIP signature (most common issue)
+    if content.startswith('PK'):
+        return True
+    
+    # Check for null bytes (binary indicator)
+    if '\x00' in content[:1000]:
+        return True
+    
+    # Check for high ratio of non-printable characters
+    if len(content) > 100:
+        non_printable = sum(1 for c in content[:1000] if ord(c) < 32 and c not in '\n\r\t')
+        if non_printable > len(content[:1000]) * 0.1:  # More than 10% non-printable
+            return True
+    
+    return False
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=DocumentResponse)
 def create_document(
     document_data: DocumentCreate,
@@ -58,6 +95,14 @@ def create_document(
     """
     try:
         user = get_user_from_email(email, db)
+        
+        # Validate content is not binary
+        if document_data.content_text and is_binary_content(document_data.content_text):
+            logger.warning(f"Rejected binary content for document creation: user_id={user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document content appears to be binary or corrupted. Please use text content only."
+            )
         
         document = Document(
             user_id=user.id,
@@ -75,6 +120,8 @@ def create_document(
         
         return DocumentResponse.model_validate(document)
         
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to create document: {e}", exc_info=True)
@@ -198,6 +245,7 @@ def update_document(
     """
     Update an existing document.
     
+    Validates that content is not binary/corrupted before saving.
     Only updates provided fields. Returns 404 if document not found or user doesn't have access.
     """
     try:
@@ -214,6 +262,14 @@ def update_document(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Document not found"
+            )
+        
+        # Validate content is not binary before updating
+        if document_data.content_text is not None and is_binary_content(document_data.content_text):
+            logger.warning(f"Rejected binary content for document update: document_id={document_id}, user_id={user.id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document content appears to be binary or corrupted. Please use text content only."
             )
         
         # Update only provided fields
