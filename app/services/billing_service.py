@@ -13,7 +13,8 @@ from app.db.models.subscription import Subscription
 from app.core.config import (
     STRIPE_SECRET_KEY,
     STRIPE_PRICE_ID_PRO,
-    STRIPE_PRICE_ID_ELITE
+    STRIPE_PRICE_ID_ELITE,
+    STRIPE_PRICE_ID_PREMIUM
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,12 @@ def _build_price_mappings() -> Tuple[Dict[str, str], Dict[str, str]]:
     if STRIPE_PRICE_ID_ELITE:
         price_to_plan[STRIPE_PRICE_ID_ELITE] = "elite"
         plan_to_price["elite"] = STRIPE_PRICE_ID_ELITE
+    
+    # Add premium plan mapping
+    from app.core.config import STRIPE_PRICE_ID_PREMIUM
+    if STRIPE_PRICE_ID_PREMIUM:
+        price_to_plan[STRIPE_PRICE_ID_PREMIUM] = "premium"
+        plan_to_price["premium"] = STRIPE_PRICE_ID_PREMIUM
     
     return price_to_plan, plan_to_price
 
@@ -218,19 +225,43 @@ def handle_checkout_session_completed(event_data: Dict, db: Session) -> Subscrip
     if plan:
         subscription.plan_type = plan
     
-    # Get price ID from subscription
+    # Get price ID and period end from subscription
+    price_id = None
+    period_end = None
     if subscription_id:
         try:
             stripe_sub = stripe.Subscription.retrieve(subscription_id)
             price_id = stripe_sub.get("items", {}).get("data", [{}])[0].get("price", {}).get("id")
-            subscription.stripe_price_id = price_id
+            period_end_timestamp = stripe_sub.get("current_period_end")
+            if period_end_timestamp:
+                from datetime import datetime
+                period_end = datetime.fromtimestamp(period_end_timestamp)
+            
+            # Update plan from price ID if not set
+            if not plan and price_id:
+                plan = get_plan_from_price_id(price_id)
+                if plan:
+                    subscription.plan_type = plan
         except Exception as e:
-            logger.warning(f"Failed to retrieve price ID from Stripe: {e}")
+            logger.warning(f"Failed to retrieve subscription from Stripe: {e}")
+    
+    subscription.stripe_price_id = price_id
+    subscription.status = "active"
+    
+    # Sync to User model
+    user.plan = subscription.plan_type if subscription.plan_type in ["free", "premium"] else "premium"
+    user.stripe_customer_id = customer_id
+    user.stripe_subscription_id = subscription_id
+    user.stripe_price_id = price_id
+    user.plan_status = "active"
+    user.current_period_end = period_end
     
     db.commit()
     db.refresh(subscription)
+    db.refresh(user)
     
     logger.info(f"Checkout completed: user_id={user.id}, plan={subscription.plan_type}, subscription_id={subscription_id}")
+    logger.info(f"User upgraded: user_id={user.id}, plan={user.plan}, subscription_id={subscription_id}")
     
     return subscription
 
@@ -268,18 +299,36 @@ def handle_subscription_created(event_data: Dict, db: Session) -> Subscription:
     subscription_record.stripe_subscription_id = subscription_id
     subscription_record.status = "active"
     
-    # Get price ID and plan
+    # Get price ID, plan, and period end
     price_id = subscription_data.get("items", {}).get("data", [{}])[0].get("price", {}).get("id")
+    period_end_timestamp = subscription_data.get("current_period_end")
+    period_end = None
+    if period_end_timestamp:
+        from datetime import datetime
+        period_end = datetime.fromtimestamp(period_end_timestamp)
+    
     if price_id:
         subscription_record.stripe_price_id = price_id
         plan = get_plan_from_price_id(price_id)
         if plan:
             subscription_record.plan_type = plan
     
+    # Sync to User model
+    user = db.query(User).filter(User.id == subscription_record.user_id).first()
+    if user:
+        user.plan = subscription_record.plan_type if subscription_record.plan_type in ["free", "premium"] else "premium"
+        user.stripe_customer_id = customer_id
+        user.stripe_subscription_id = subscription_id
+        user.stripe_price_id = price_id
+        user.plan_status = "active"
+        user.current_period_end = period_end
+    
     db.commit()
     db.refresh(subscription_record)
     
-    logger.info(f"Subscription created: user_id={subscription_record.user_id}, plan={subscription_record.plan_type}")
+    logger.info(f"Subscription created: user_id={subscription_record.user_id}, plan={subscription_record.plan_type}, subscription_id={subscription_id}")
+    if user:
+        logger.info(f"User upgraded: user_id={user.id}, plan={user.plan}")
     
     return subscription_record
 
@@ -310,18 +359,35 @@ def handle_subscription_updated(event_data: Dict, db: Session) -> Subscription:
     # Update status
     subscription.status = status
     
-    # Update plan from price ID if changed
+    # Get price ID and period end
     price_id = subscription_data.get("items", {}).get("data", [{}])[0].get("price", {}).get("id")
+    period_end_timestamp = subscription_data.get("current_period_end")
+    period_end = None
+    if period_end_timestamp:
+        from datetime import datetime
+        period_end = datetime.fromtimestamp(period_end_timestamp)
+    
     if price_id:
         subscription.stripe_price_id = price_id
         plan = get_plan_from_price_id(price_id)
         if plan:
             subscription.plan_type = plan
     
+    # Sync to User model
+    user = db.query(User).filter(User.id == subscription.user_id).first()
+    if user:
+        user.plan = subscription.plan_type if subscription.plan_type in ["free", "premium"] else "premium"
+        user.plan_status = status
+        user.current_period_end = period_end
+        if price_id:
+            user.stripe_price_id = price_id
+    
     db.commit()
     db.refresh(subscription)
     
-    logger.info(f"Subscription updated: user_id={subscription.user_id}, status={status}, plan={subscription.plan_type}")
+    logger.info(f"Subscription updated: user_id={subscription.user_id}, status={status}, plan={subscription.plan_type}, subscription_id={subscription_id}")
+    if user:
+        logger.info(f"User plan updated: user_id={user.id}, plan={user.plan}, status={status}")
     
     return subscription
 
@@ -349,14 +415,24 @@ def handle_subscription_deleted(event_data: Dict, db: Session) -> Subscription:
     if not subscription:
         raise ValueError(f"Subscription not found for subscription_id={subscription_id}")
     
-    # Downgrade to free
+    # Downgrade to free immediately on cancellation
     subscription.plan_type = "free"
     subscription.status = "canceled"
     subscription.stripe_subscription_id = None  # Clear subscription ID but keep customer ID
     
+    # Sync to User model - downgrade to free
+    user = db.query(User).filter(User.id == subscription.user_id).first()
+    if user:
+        user.plan = "free"
+        user.plan_status = "canceled"
+        user.stripe_subscription_id = None
+        # Keep customer_id and price_id for potential reactivation
+    
     db.commit()
     db.refresh(subscription)
     
-    logger.info(f"Subscription deleted: user_id={subscription.user_id}, downgraded to free")
+    logger.info(f"Subscription deleted: user_id={subscription.user_id}, downgraded to free, subscription_id={subscription_id}")
+    if user:
+        logger.info(f"User downgraded: user_id={user.id}, plan={user.plan}")
     
     return subscription

@@ -9,6 +9,7 @@ All models must be imported here to be included in database migrations and table
 from app.db.models.user import User
 from app.db.models.subscription import Subscription
 from app.db.models.usage import UsageEvent
+from app.db.models.ai_usage import AIUsage
 from app.db.models.resume import Resume
 from app.db.models.job import Job, JobDescription
 from app.db.models.job_posting import JobPosting
@@ -27,6 +28,7 @@ __all__ = [
     "User",
     "Subscription",
     "UsageEvent",
+    "AIUsage",
     "Resume",
     "Job",
     "JobDescription",

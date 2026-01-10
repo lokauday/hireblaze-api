@@ -16,6 +16,10 @@ from app.services.billing_service import (
     handle_subscription_updated,
     handle_subscription_deleted
 )
+from app.services.billing_invoice_handlers import (
+    handle_invoice_payment_succeeded,
+    handle_invoice_payment_failed
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,14 @@ async def stripe_webhook(
             elif event_type == "customer.subscription.deleted":
                 subscription = handle_subscription_deleted(event_data, db)
                 logger.info(f"Subscription deleted: user_id={subscription.user_id}, downgraded to free")
+                
+            elif event_type == "invoice.payment_succeeded":
+                handle_invoice_payment_succeeded(event_data, db)
+                logger.info("Invoice payment succeeded")
+                
+            elif event_type == "invoice.payment_failed":
+                handle_invoice_payment_failed(event_data, db)
+                logger.warning("Invoice payment failed")
                 
             else:
                 # Unhandled event type - log but don't fail

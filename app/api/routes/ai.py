@@ -16,7 +16,8 @@ from app.db.models.match_analysis import MatchAnalysis
 from app.db.models.interview_pack import InterviewPack
 from app.db.models.outreach_message import OutreachMessage, OutreachType
 from app.db.models.document import Document
-from app.core.auth_dependency import get_current_user
+from app.core.auth_dependency import get_current_user, get_current_user_obj, get_db
+from app.core.gating import enforce_ai_limit, increment_ai_usage
 from app.services.ai_service import (
     analyze_job_match,
     generate_recruiter_lens,
@@ -34,12 +35,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ai", tags=["AI"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 # ============================================
@@ -420,7 +415,8 @@ def outreach(
 @router.post("/transform", response_model=TransformResponse)
 def transform(
     request: TransformRequest = Body(...),
-    email: str = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_obj),
+    db: Session = Depends(get_db)
 ):
     """
     Transform text content using AI.
@@ -433,9 +429,14 @@ def transform(
     - fix_grammar: Fix grammar only
     - add_keywords: Add relevant keywords
     
-    Requires authentication. Returns transformed markdown.
+    Requires authentication. Free users limited to 3 AI calls per day.
+    Premium users have unlimited access.
+    Returns transformed markdown.
     """
     try:
+        # Enforce usage limits based on plan
+        enforce_ai_limit(db, current_user)
+        
         # Validate mode
         valid_modes = ["rewrite", "shorten", "expand", "ats_optimize", "fix_grammar", "add_keywords"]
         if request.mode not in valid_modes:
@@ -459,14 +460,17 @@ def transform(
                 detail="Text cannot be empty"
             )
         
-        # Transform text
+        # Transform text using AI
         result = transform_text(
             mode=request.mode,
             text=request.text,
             context=request.context or {}
         )
         
-        logger.info(f"Text transformed: mode={request.mode}, user={email}, length={len(result)}")
+        # Increment usage count after successful transformation
+        increment_ai_usage(db, current_user.id)
+        
+        logger.info(f"Text transformed: mode={request.mode}, user_id={current_user.id}, plan={current_user.plan}, length={len(result)}")
         
         return TransformResponse(output=result)
         
@@ -474,6 +478,7 @@ def transform(
         raise
     except Exception as e:
         logger.error(f"Error in transform endpoint: {e}", exc_info=True)
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to transform text"

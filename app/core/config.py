@@ -34,6 +34,13 @@ STRIPE_PUBLIC_KEY = os.getenv("STRIPE_PUBLIC_KEY")
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID")
 STRIPE_PRICE_ID_PRO = os.getenv("STRIPE_PRICE_ID_PRO")
 STRIPE_PRICE_ID_ELITE = os.getenv("STRIPE_PRICE_ID_ELITE")
+STRIPE_PRICE_ID_PREMIUM = os.getenv("STRIPE_PRICE_ID_PREMIUM")  # Premium plan price ID
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Feature gating limits
+MAX_FREE_AI_CALLS_PER_DAY = int(os.getenv("MAX_FREE_AI_CALLS_PER_DAY", "3"))
+
+# Frontend URL for redirects
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")

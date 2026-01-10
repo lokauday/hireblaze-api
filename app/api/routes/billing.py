@@ -71,14 +71,15 @@ def create_checkout(
         # Get user
         user = get_user_from_email(email, db)
         
-        # Validate plan
-        if request.plan.lower() not in ["pro", "elite"]:
+        # Validate plan - support premium, pro, elite
+        plan_lower = request.plan.lower()
+        if plan_lower not in ["pro", "elite", "premium"]:
             logger.warning(f"Invalid plan requested: {request.plan}, user_id={user.id}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     "error": "billing_error",
-                    "detail": "Invalid plan type. Must be 'pro' or 'elite'."
+                    "detail": "Invalid plan type. Must be 'premium', 'pro', or 'elite'."
                 }
             )
         
@@ -177,6 +178,67 @@ def create_portal(
                 "error": "billing_error",
                 "detail": "Failed to create portal session. Please try again later."
             }
+        )
+
+
+@router.post("/checkout", status_code=status.HTTP_200_OK)
+def checkout(
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create Stripe checkout session for premium subscription.
+    
+    Simplified endpoint that defaults to premium plan.
+    Returns: { "url": "https://checkout.stripe.com/..." }
+    """
+    try:
+        user = get_user_from_email(email, db)
+        session = create_checkout_session(
+            user=user,
+            plan="premium",  # Default to premium
+            success_url=None,  # Use defaults from service
+            cancel_url=None,
+            db=db
+        )
+        return {"url": session.url}
+    except Exception as e:
+        logger.error(f"Error creating checkout: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.post("/portal", status_code=status.HTTP_200_OK)
+def portal(
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create Stripe billing portal session.
+    
+    Simplified endpoint for managing subscription.
+    Returns: { "url": "https://billing.stripe.com/..." }
+    """
+    try:
+        user = get_user_from_email(email, db)
+        session = create_portal_session(
+            user=user,
+            return_url=None,  # Use defaults
+            db=db
+        )
+        return {"url": session.url}
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error creating portal: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
 
 
