@@ -14,7 +14,7 @@ from app.services.quota_service import get_usage_for_response
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/me", tags=["Usage"])
+router = APIRouter(prefix="", tags=["Usage"])  # Changed from "/me" to "" to support /api/v1/usage pattern
 
 
 def get_db():
@@ -37,7 +37,7 @@ def get_user_from_email(email: str, db: Session) -> User:
     return user
 
 
-@router.get("/usage", status_code=status.HTTP_200_OK)
+@router.get("/usage", status_code=status.HTTP_200_OK)  # Route is now /usage (was /me/usage)
 def get_usage(
     email: str = Depends(get_current_user),
     db: Session = Depends(get_db)

@@ -1,108 +1,29 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import logging
-import os
-from sqlalchemy import inspect, text
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
 
-# ✅ Import All API Routes directly from route files
-from app.api.routes.auth import router as auth_router
-from app.api.routes.resume import router as resume_router
-from app.api.routes.jd import router as jd_router
-from app.api.routes.ats import router as ats_router
-from app.api.routes.cover_letter import router as cover_letter_router
-from app.api.routes.tailor import router as tailor_router
-from app.api.routes.interview import router as interview_router
-from app.api.routes.application import router as application_router
-from app.api.routes.billing import router as billing_router
-from app.api.routes.billing_webhook import router as billing_webhook_router
-from app.api.routes.system import router as system_router
-from app.api.routes.copilot_ws import router as copilot_ws_router
+# ✅ Import logging configuration first (before other imports that may log)
+from app.core.logging_config import setup_logging
+setup_logging(log_level="INFO")
+logger = logging.getLogger(__name__)
+
+# ✅ Import All API Routes (required - fail startup if missing)
+from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
+from app.api.routes import billing, billing_webhook, system
+from app.api.routes.documents import router as documents_router
+from app.api.routes.jobs import router as jobs_router
+from app.api.routes.history import router as history_router
+from app.api.routes.ai import router as ai_router
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
 from app.services.ai_engine import generate_live_answer
 from app.services.speech_engine import transcribe_audio_chunk
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import re
 
-# ✅ Import Database components for table creation
-from app.db.base import Base
-from app.db.session import engine, SessionLocal
-from app.core.config import DATABASE_URL
-
-logger = logging.getLogger(__name__)
-
-
-# ✅ Startup logic: Ensure database tables exist
-def init_db():
-    """Create all database tables if they don't exist."""
-    try:
-        # Log database URL scheme (without secrets)
-        if "@" in DATABASE_URL:
-            db_parts = DATABASE_URL.split("@")
-            if len(db_parts) > 1:
-                scheme = db_parts[0].split("://")[0] if "://" in db_parts[0] else "unknown"
-                host_info = db_parts[1].split("/")[0] if "/" in db_parts[1] else db_parts[1]
-                logger.info(f"Database: {scheme}://...@{host_info}")
-        else:
-            scheme = DATABASE_URL.split("://")[0] if "://" in DATABASE_URL else DATABASE_URL
-            logger.info(f"Database: {scheme}://...")
-        
-        # Import all models to register them with Base.metadata BEFORE checking tables
-        # This ensures all table definitions are available
-        from app.db.models.user import User
-        from app.db.models.subscription import Subscription
-        from app.db.models.resume import Resume
-        from app.db.models.job import JobDescription
-        from app.db.models.application import Application
-        from app.db.models.ats_score import ATSScore
-        from app.db.models.interview_session import InterviewSession
-        from app.db.models.interview_evaluation import InterviewEvaluation
-        from app.db.models.candidate_benchmark import CandidateBenchmark
-        
-        # Check if users table exists
-        try:
-            inspector = inspect(engine)
-            existing_tables = inspector.get_table_names()
-            
-            if "users" not in existing_tables:
-                logger.info("Users table not found. Creating all tables...")
-                Base.metadata.create_all(bind=engine)
-                logger.info("✅ Database tables created successfully")
-            else:
-                logger.info(f"✅ Database tables already exist ({len(existing_tables)} tables found)")
-                
-                # Verify users table has correct structure
-                try:
-                    db = SessionLocal()
-                    db.execute(text("SELECT 1 FROM users LIMIT 1"))
-                    db.close()
-                    logger.info("✅ Users table verified and accessible")
-                except Exception as e:
-                    logger.warning(f"Users table exists but may have issues: {e}")
-                    # Try to create missing tables
-                    logger.info("Attempting to create missing tables...")
-                    Base.metadata.create_all(bind=engine)
-        except Exception as inspect_error:
-            # If inspect fails (e.g., SQLite), try creating tables anyway
-            logger.warning(f"Could not inspect database: {inspect_error}")
-            logger.info("Creating all tables...")
-            Base.metadata.create_all(bind=engine)
-            logger.info("✅ Database tables created")
-                
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize database: {e}", exc_info=True)
-        raise
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting Hireblaze API...")
-    init_db()
-    yield
-    # Shutdown (if needed)
-    logger.info("Shutting down Hireblaze API...")
+# ✅ Import database initialization
+from app.db.init_db import init_db
 
 
 
@@ -112,49 +33,132 @@ async def lifespan(app: FastAPI):
 # ✅ FASTAPI APP INIT
 # ============================================
 
-app = FastAPI(title="Hireblaze AI", lifespan=lifespan)
+app = FastAPI(
+    title="Hireblaze AI",
+    description="AI-powered job application assistant with usage quotas and billing",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-# ✅ CORS — ALLOW LOCAL + VERCEL ORIGINS
-# Read allowed origins from environment variable (comma-separated)
-# Default to localhost for development
-allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+logger.info("Hireblaze API starting up...")
 
-# Always include localhost for development
-if "http://localhost:3000" not in allowed_origins:
-    allowed_origins.append("http://localhost:3000")
-if "http://127.0.0.1:3000" not in allowed_origins:
-    allowed_origins.append("http://127.0.0.1:3000")
 
-logger.info(f"CORS allowed origins: {allowed_origins}")
+# ============================================
+# ✅ STARTUP EVENT - Database Initialization
+# ============================================
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize database tables and auth system on startup.
+    
+    This runs once when the FastAPI application starts (not per request).
+    Works for both PostgreSQL (production) and SQLite (local development).
+    """
+    logger.info("Initializing database...")
+    
+    # Run Alembic migrations safely (idempotent)
+    try:
+        from alembic.config import Config
+        from alembic import command
+        import os
+        
+        alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations completed")
+    except Exception as e:
+        logger.warning(f"Alembic migrations failed (non-fatal): {e}. Tables will be created via init_db() if needed.")
+        # Continue with init_db as fallback
+    
+    # Fallback: Initialize database tables (idempotent - only creates missing tables)
+    init_db()
+    logger.info("Database initialization complete")
+    
+    # Initialize auth system (verify bcrypt/passlib is working)
+    try:
+        from app.core.security import hash_password, verify_password
+        # Test password hashing to ensure bcrypt is configured correctly
+        test_hash = hash_password("test_password_123")
+        assert verify_password("test_password_123", test_hash), "Password verification failed"
+        logger.info("Auth system initialized successfully")
+    except Exception as e:
+        logger.error(f"Auth system initialization failed: {e}", exc_info=True)
+        raise
+
+# ✅ CORS — ALLOW FRONTEND ORIGINS
+# Support local dev, Vercel previews, and production domains
+import os
+
+# Get explicit allowed origins from env var (comma-separated)
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins_list = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Add origins from ALLOWED_ORIGINS env var if provided
+if ALLOWED_ORIGINS:
+    allowed_origins_list.extend([origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()])
+
+# Add common production domains from env vars
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
+if FRONTEND_URL and FRONTEND_URL not in allowed_origins_list:
+    allowed_origins_list.append(FRONTEND_URL)
+
+PRODUCTION_FRONTEND_URL = os.getenv("PRODUCTION_FRONTEND_URL", "")
+if PRODUCTION_FRONTEND_URL and PRODUCTION_FRONTEND_URL not in allowed_origins_list:
+    allowed_origins_list.append(PRODUCTION_FRONTEND_URL)
+
+# Regex pattern to allow any *.vercel.app subdomain (for preview deployments)
+# Note: This is regex ONLY, NOT in allow_origins list
+vercel_preview_pattern = r"^https:\/\/.*\.vercel\.app$"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=allowed_origins_list,
+    allow_origin_regex=vercel_preview_pattern,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Range", "X-Total-Count"],
 )
 
 
 
 # ============================================
-# ✅ REGISTER ALL ROUTERS
+# ✅ REGISTER ALL ROUTERS WITH /api/v1 PREFIX
 # ============================================
 
-app.include_router(auth_router)
-app.include_router(resume_router)
-app.include_router(jd_router)
-app.include_router(ats_router)
-app.include_router(cover_letter_router)
-app.include_router(tailor_router)
-app.include_router(interview_router)
-app.include_router(application_router)
-app.include_router(billing_router)
-app.include_router(billing_webhook_router)
-app.include_router(system_router)
-app.include_router(copilot_ws_router)
+# Create API v1 router group
+api_v1_router = APIRouter(prefix="/api/v1")
+
+# ✅ Register API Routes under /api/v1 prefix
+api_v1_router.include_router(auth.router)
+api_v1_router.include_router(resume.router)
+api_v1_router.include_router(jd.router, tags=["AI"])  # JD parsing
+api_v1_router.include_router(ats.router, tags=["AI"])  # ATS scoring
+api_v1_router.include_router(cover_letter.router, tags=["AI"])  # Cover letter generation
+api_v1_router.include_router(tailor.router, tags=["AI"])  # Resume tailoring
+api_v1_router.include_router(interview.router)
+api_v1_router.include_router(application.router)
+api_v1_router.include_router(usage.router)  # Usage tracking and quota info - now /api/v1/usage
+api_v1_router.include_router(billing.router)  # Billing (checkout, portal)
+api_v1_router.include_router(billing_webhook.router)  # Stripe webhooks
+api_v1_router.include_router(system.router)
+# ✅ Core routes (required - must be available)
+api_v1_router.include_router(documents_router)  # AI Drive - Documents CRUD - now /api/v1/documents
+api_v1_router.include_router(jobs_router)  # Job Tracker
+api_v1_router.include_router(history_router)  # Activity History - now /api/v1/history
+api_v1_router.include_router(ai_router)  # AI endpoints (job-match, recruiter-lens, interview-pack, outreach)
+
+# Mount the API v1 router
+app.include_router(api_v1_router)
+
+# ✅ Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+logger.info("All routes registered successfully")
 
 
 
@@ -215,12 +219,9 @@ def root():
 
 
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 import os
 
-# Serve the static folder
-app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
-
+# Serve payment page
 @app.get("/pay")
 def serve_payment_page():
     return FileResponse("frontend/static/copilot.html")

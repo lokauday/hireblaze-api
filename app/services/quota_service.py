@@ -28,10 +28,26 @@ def get_plan_for_user(db: Session, user_id: int) -> str:
     Returns:
         Plan type string (free, pro, elite, recruiter)
     """
-    subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
-    if not subscription:
-        return "free"
-    return subscription.plan_type or "free"
+    try:
+        subscription = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+        if not subscription:
+            return "free"
+        return subscription.plan_type or "free"
+    except Exception as e:
+        # Handle schema mismatch gracefully - use raw SQL if ORM fails
+        logger.warning(f"ORM query failed for subscription (schema mismatch?), using raw SQL: {e}")
+        try:
+            from sqlalchemy import text
+            result = db.execute(
+                text("SELECT plan_type FROM subscriptions WHERE user_id = :user_id LIMIT 1"),
+                {"user_id": user_id}
+            ).fetchone()
+            if result and result[0]:
+                return result[0]
+            return "free"
+        except Exception as sql_error:
+            logger.error(f"Raw SQL also failed: {sql_error}")
+            return "free"  # Default to free plan on error
 
 
 def get_month_usage(db: Session, user_id: int, month_key: str) -> Dict[str, int]:
