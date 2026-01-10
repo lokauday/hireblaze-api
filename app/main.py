@@ -95,6 +95,8 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins_list = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",  # Next.js fallback port when 3000 is in use
+    "http://127.0.0.1:3001",
 ]
 
 # Add origins from ALLOWED_ORIGINS env var if provided
