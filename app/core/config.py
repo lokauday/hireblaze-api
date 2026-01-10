@@ -1,6 +1,13 @@
 import os
 import secrets
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (must be first)
+# Use absolute path to ensure .env is found regardless of working directory
+env_path = Path(__file__).parent.parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 logger = logging.getLogger(__name__)
 

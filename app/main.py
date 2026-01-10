@@ -1,5 +1,9 @@
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
+from dotenv import load_dotenv
+
+# ✅ Load environment variables from .env file
+load_dotenv()
 
 # ✅ Import logging configuration first (before other imports that may log)
 from app.core.logging_config import setup_logging

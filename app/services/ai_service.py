@@ -475,15 +475,8 @@ def transform_text(mode: str, text: str, context: Dict[str, Any] = None) -> str:
         context = {}
     
     # Check if OpenAI is configured - return clear 500 error if missing
-    if not OPENAI_AVAILABLE or not OPENAI_API_KEY:
-        logger.error("OPENAI_API_KEY not configured - cannot perform AI transformation")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AI not configured"
-        )
-    
-    if client is None:
-        logger.error("OpenAI client not initialized - cannot perform AI transformation")
+    if not _use_openai():
+        logger.error("OPENAI_API_KEY not configured or client not available - cannot perform AI transformation")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="AI not configured"
