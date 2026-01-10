@@ -3,6 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+import os
 from sqlalchemy import inspect, text
 
 # ✅ Import All API Routes directly from route files
@@ -113,16 +114,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Hireblaze AI", lifespan=lifespan)
 
-# ✅ CORS LOCKDOWN — ONLY ALLOW YOUR FRONTEND
+# ✅ CORS — ALLOW LOCAL + VERCEL ORIGINS
+# Read allowed origins from environment variable (comma-separated)
+# Default to localhost for development
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+
+# Always include localhost for development
+if "http://localhost:3000" not in allowed_origins:
+    allowed_origins.append("http://localhost:3000")
+if "http://127.0.0.1:3000" not in allowed_origins:
+    allowed_origins.append("http://127.0.0.1:3000")
+
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",      # local frontend
-        "http://127.0.0.1:3000",
-        # "https://hireblaze.ai",     # uncomment when domain is live
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
