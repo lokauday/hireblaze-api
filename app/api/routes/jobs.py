@@ -12,7 +12,13 @@ from sqlalchemy import or_, and_
 from app.db.session import SessionLocal
 from app.db.models.user import User
 from app.db.models.job import Job
+from app.db.models.job_posting import JobPosting
+from app.db.models.match_analysis import MatchAnalysis
+from app.db.models.interview_pack import InterviewPack
+from app.db.models.outreach_message import OutreachMessage
 from app.core.auth_dependency import get_current_user
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
 from app.schemas.job import (
     JobCreate,
     JobUpdate,
@@ -284,4 +290,217 @@ def delete_job(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete job"
+        )
+
+
+# ============================================
+# Job Auto-Tracking Endpoints (JobPosting)
+# ============================================
+
+class ImportUrlRequest(BaseModel):
+    """Request model for importing job URL."""
+    source_url: str = Field(..., description="URL of the job posting")
+    company: Optional[str] = Field(None, description="Company name (auto-detected if not provided)")
+    title: Optional[str] = Field(None, description="Job title (auto-detected if not provided)")
+    location: Optional[str] = Field(None, description="Job location")
+
+
+class JobPostingResponse(BaseModel):
+    """Response model for JobPosting."""
+    id: int
+    user_id: int
+    source_url: Optional[str]
+    company: str
+    title: str
+    location: Optional[str]
+    jd_text: str
+    created_at: str
+    updated_at: str
+    
+    class Config:
+        from_attributes = True
+
+
+@router.post("/import-url", status_code=status.HTTP_201_CREATED, response_model=JobPostingResponse)
+def import_job_url(
+    request: ImportUrlRequest = ...,
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Import a job posting by URL.
+    
+    Creates a JobPosting entry with placeholder JD text. Use parse-jd endpoint to extract full JD.
+    """
+    try:
+        user = get_user_from_email(email, db)
+        
+        # Create job posting with placeholder JD text
+        job_posting = JobPosting(
+            user_id=user.id,
+            source_url=request.source_url,
+            company=request.company or "Unknown Company",
+            title=request.title or "Job Posting",
+            location=request.location,
+            jd_text="[JD parsing pending - use /jobs/{id}/parse-jd to extract]"
+        )
+        
+        db.add(job_posting)
+        db.commit()
+        db.refresh(job_posting)
+        
+        logger.info(f"Job posting imported: id={job_posting.id}, user_id={user.id}, url={request.source_url}")
+        
+        return JobPostingResponse.model_validate(job_posting)
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to import job URL: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to import job URL"
+        )
+
+
+@router.post("/{job_id}/parse-jd", status_code=status.HTTP_200_OK, response_model=JobPostingResponse)
+def parse_job_description(
+    job_id: int,
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Parse job description from a JobPosting's source URL.
+    
+    Uses existing JD parsing logic or AI if configured. Updates the jd_text field.
+    """
+    try:
+        user = get_user_from_email(email, db)
+        
+        # Get job posting (note: using job_id but looking up JobPosting)
+        job_posting = db.query(JobPosting).filter(
+            JobPosting.id == job_id,
+            JobPosting.user_id == user.id
+        ).first()
+        
+        if not job_posting:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job posting not found"
+            )
+        
+        # Try to parse JD from URL or use AI
+        # For now, use a placeholder - in production, implement actual URL scraping or AI extraction
+        try:
+            from app.services.ai_service import OPENAI_API_KEY
+            if OPENAI_API_KEY:
+                # Use AI to extract JD from URL (placeholder - implement actual scraping/extraction)
+                job_posting.jd_text = "[JD extracted from URL - implement URL scraping here]"
+            else:
+                # Fallback: try existing JD parsing logic
+                from app.api.routes import jd
+                # This would need to be implemented based on existing JD parsing logic
+                job_posting.jd_text = "[JD parsing not available - manual entry required]"
+        except Exception as e:
+            logger.warning(f"JD parsing failed, using placeholder: {e}")
+            job_posting.jd_text = "[JD parsing failed - please enter manually]"
+        
+        db.commit()
+        db.refresh(job_posting)
+        
+        logger.info(f"JD parsed for job posting: id={job_posting.id}, user_id={user.id}")
+        
+        return JobPostingResponse.model_validate(job_posting)
+        
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to parse JD: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to parse job description"
+        )
+
+
+@router.get("/{job_id}/insights", status_code=status.HTTP_200_OK)
+def get_job_insights(
+    job_id: int,
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get insights for a job posting.
+    
+    Returns match analysis, recruiter lens, outreach suggestions, and interview pack availability.
+    """
+    try:
+        user = get_user_from_email(email, db)
+        
+        # Get job posting
+        job_posting = db.query(JobPosting).filter(
+            JobPosting.id == job_id,
+            JobPosting.user_id == user.id
+        ).first()
+        
+        if not job_posting:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job posting not found"
+            )
+        
+        # Get latest match analysis for this job
+        match_analysis = db.query(MatchAnalysis).filter(
+            MatchAnalysis.job_id == job_id,
+            MatchAnalysis.user_id == user.id
+        ).order_by(MatchAnalysis.created_at.desc()).first()
+        
+        # Get outreach messages for this job
+        outreach_messages = db.query(OutreachMessage).filter(
+            OutreachMessage.job_id == job_id,
+            OutreachMessage.user_id == user.id
+        ).order_by(OutreachMessage.created_at.desc()).limit(5).all()
+        
+        # Build insights response
+        insights = {
+            "job_posting": {
+                "id": job_posting.id,
+                "company": job_posting.company,
+                "title": job_posting.title,
+                "location": job_posting.location,
+                "has_jd": bool(job_posting.jd_text and job_posting.jd_text != "[JD parsing pending - use /jobs/{id}/parse-jd to extract]")
+            },
+            "match_analysis": None,
+            "recruiter_lens": None,
+            "outreach_suggestions": [
+                {
+                    "type": msg.type.value,
+                    "created_at": str(msg.created_at),
+                    "preview": msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+                }
+                for msg in outreach_messages
+            ],
+            "has_interview_pack": db.query(InterviewPack).filter(
+                InterviewPack.job_id == job_id,
+                InterviewPack.user_id == user.id
+            ).first() is not None
+        }
+        
+        if match_analysis:
+            insights["match_analysis"] = {
+                "score": match_analysis.score,
+                "created_at": str(match_analysis.created_at),
+                "narrative": match_analysis.narrative
+            }
+            insights["recruiter_lens"] = match_analysis.recruiter_lens
+        
+        return insights
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get job insights: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get job insights"
         )

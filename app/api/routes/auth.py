@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Form, status
+from fastapi import APIRouter, Depends, HTTPException, Form, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.session import SessionLocal
 from app.db.models.user import User
 from app.core.security import hash_password, verify_password, create_access_token, validate_password
+from app.core.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def signup(
     email: str = Form(...),
     password: str = Form(...),
     visa_status: str = Form("Citizen"),
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -37,7 +39,7 @@ def signup(
     Accepts form-urlencoded data with:
     - full_name: User's full name (required)
     - email: User's email address (required, must be unique)
-    - password: User's password (required, min 6 characters, max 72 bytes UTF-8)
+    - password: User's password (required, min 8 characters, max 72 bytes UTF-8)
     - visa_status: User's visa status (optional, defaults to "Citizen")
     
     Returns:
@@ -46,6 +48,9 @@ def signup(
     - 422: Validation error (invalid input data, password too short/long)
     - 500: Server error
     """
+    # Rate limiting: 10 requests per minute per IP
+    check_rate_limit(request, max_requests=10, window_seconds=60)
+    
     try:
         # Check for duplicate email
         existing_user = db.query(User).filter(User.email == email).first()
@@ -76,10 +81,10 @@ def signup(
                 detail="Password is required"
             )
         
-        if len(password) < 6:
+        if len(password) < 8:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Password must be at least 6 characters"
+                detail="Password must be at least 8 characters"
             )
         
         # Validate password length (72-byte bcrypt limit)
@@ -165,9 +170,13 @@ def signup(
 # ✅ ✅ ✅ FIXED OAUTH2 LOGIN FOR SWAGGER + JWT ✅ ✅ ✅
 @router.post("/login")
 def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
+    # Rate limiting: 10 requests per minute per IP
+    check_rate_limit(request, max_requests=10, window_seconds=60)
+    
     # Swagger sends "username", but we treat it as email
     user = db.query(User).filter(User.email == form_data.username).first()
 

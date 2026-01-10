@@ -11,6 +11,10 @@ from app.db.models.subscription import Subscription
 from app.db.models.usage import UsageEvent
 from app.db.models.resume import Resume
 from app.db.models.job import Job, JobDescription
+from app.db.models.job_posting import JobPosting
+from app.db.models.match_analysis import MatchAnalysis
+from app.db.models.interview_pack import InterviewPack
+from app.db.models.outreach_message import OutreachMessage, OutreachType
 from app.db.models.document import Document
 from app.db.models.application import Application
 from app.db.models.ats_score import ATSScore
@@ -26,6 +30,11 @@ __all__ = [
     "Resume",
     "Job",
     "JobDescription",
+    "JobPosting",
+    "MatchAnalysis",
+    "InterviewPack",
+    "OutreachMessage",
+    "OutreachType",
     "Document",
     "Application",
     "ATSScore",

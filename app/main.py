@@ -12,6 +12,7 @@ from app.api.routes import billing, billing_webhook, system
 from app.api.routes.documents import router as documents_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.history import router as history_router
+from app.api.routes.ai import router as ai_router
 
 # ✅ Import Core Services
 from app.services.socket_manager import ConnectionManager
@@ -55,6 +56,21 @@ async def startup_event():
     Works for both PostgreSQL (production) and SQLite (local development).
     """
     logger.info("Initializing database...")
+    
+    # Run Alembic migrations safely (idempotent)
+    try:
+        from alembic.config import Config
+        from alembic import command
+        import os
+        
+        alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+        command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic migrations completed")
+    except Exception as e:
+        logger.warning(f"Alembic migrations failed (non-fatal): {e}. Tables will be created via init_db() if needed.")
+        # Continue with init_db as fallback
+    
+    # Fallback: Initialize database tables (idempotent - only creates missing tables)
     init_db()
     logger.info("Database initialization complete")
     
@@ -105,6 +121,7 @@ app.include_router(system.router)
 app.include_router(documents_router)  # AI Drive - Documents CRUD
 app.include_router(jobs_router)  # Job Tracker
 app.include_router(history_router)  # Activity History
+app.include_router(ai_router)  # AI endpoints (job-match, recruiter-lens, interview-pack, outreach)
 
 # ✅ Static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

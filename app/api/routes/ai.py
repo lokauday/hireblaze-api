@@ -1,0 +1,392 @@
+"""
+AI endpoints for FinalRoundAI++ features.
+"""
+import logging
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Body
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
+
+from app.db.session import SessionLocal
+from app.db.models.user import User
+from app.db.models.resume import Resume
+from app.db.models.job_posting import JobPosting
+from app.db.models.match_analysis import MatchAnalysis
+from app.db.models.interview_pack import InterviewPack
+from app.db.models.outreach_message import OutreachMessage, OutreachType
+from app.db.models.document import Document
+from app.core.auth_dependency import get_current_user
+from app.services.ai_service import (
+    analyze_job_match,
+    generate_recruiter_lens,
+    generate_interview_pack,
+    generate_outreach_message,
+    MatchScoreResponse,
+    RecruiterLensResponse,
+    InterviewPackResponse,
+    OutreachResponse
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/ai", tags=["AI"])
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ============================================
+# Request Models
+# ============================================
+
+class JobMatchRequest(BaseModel):
+    """Request model for job match analysis."""
+    resume_text: Optional[str] = Field(None, description="Resume text content")
+    resume_id: Optional[int] = Field(None, description="Resume ID from database")
+    jd_text: Optional[str] = Field(None, description="Job description text")
+    job_id: Optional[int] = Field(None, description="Job posting ID from database")
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "resume_id": 1,
+                "job_id": 2
+            }
+        }
+
+
+class RecruiterLensRequest(BaseModel):
+    """Request model for recruiter lens analysis."""
+    resume_text: Optional[str] = Field(None, description="Resume text content")
+    resume_id: Optional[int] = Field(None, description="Resume ID from database")
+    jd_text: Optional[str] = Field(None, description="Job description text")
+    job_id: Optional[int] = Field(None, description="Job posting ID from database")
+    save_to_drive: bool = Field(False, description="Save result as Document in Drive")
+
+
+class InterviewPackRequest(BaseModel):
+    """Request model for interview pack generation."""
+    resume_text: Optional[str] = Field(None, description="Resume text content")
+    resume_id: Optional[int] = Field(None, description="Resume ID from database")
+    jd_text: Optional[str] = Field(None, description="Job description text")
+    job_id: Optional[int] = Field(None, description="Job posting ID from database")
+    save_to_drive: bool = Field(False, description="Save result as Document in Drive")
+
+
+class OutreachRequest(BaseModel):
+    """Request model for outreach message generation."""
+    message_type: str = Field(..., description="Type: recruiter_followup, linkedin_dm, thank_you, referral_ask")
+    resume_text: Optional[str] = Field(None, description="Resume text content")
+    resume_id: Optional[int] = Field(None, description="Resume ID from database")
+    jd_text: Optional[str] = Field(None, description="Job description text")
+    job_id: Optional[int] = Field(None, description="Job posting ID from database")
+    company: Optional[str] = Field(None, description="Company name")
+    job_title: Optional[str] = Field(None, description="Job title")
+    save_to_drive: bool = Field(False, description="Save result as Document in Drive")
+
+
+# ============================================
+# Helper Functions
+# ============================================
+
+def _get_resume_text(db: Session, user_id: int, resume_id: Optional[int], resume_text: Optional[str]) -> str:
+    """Get resume text from ID or use provided text."""
+    if resume_text:
+        return resume_text
+    if resume_id:
+        resume = db.query(Resume).filter(Resume.id == resume_id, Resume.user_id == user_id).first()
+        if not resume:
+            raise HTTPException(status_code=404, detail="Resume not found")
+        return resume.content or resume.parsed_text or ""
+    raise HTTPException(status_code=400, detail="Either resume_text or resume_id must be provided")
+
+
+def _get_jd_text(db: Session, user_id: int, job_id: Optional[int], jd_text: Optional[str]) -> tuple:
+    """Get job description text and metadata from ID or use provided text."""
+    company = ""
+    job_title = ""
+    
+    if jd_text:
+        return jd_text, company, job_title
+    
+    if job_id:
+        job = db.query(JobPosting).filter(JobPosting.id == job_id, JobPosting.user_id == user_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job posting not found")
+        return job.jd_text, job.company or "", job.title or ""
+    
+    raise HTTPException(status_code=400, detail="Either jd_text or job_id must be provided")
+
+
+def _save_to_drive(db: Session, user_id: int, title: str, content: str, doc_type: str) -> Document:
+    """Save content as a Document in Drive."""
+    import json
+    
+    doc = Document(
+        user_id=user_id,
+        title=title,
+        type=doc_type,
+        content_text=content if isinstance(content, str) else json.dumps(content),
+        tags=[]
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+# ============================================
+# Endpoints
+# ============================================
+
+@router.post("/job-match", response_model=MatchScoreResponse)
+def job_match(
+    request: JobMatchRequest = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Analyze match between resume and job description.
+    
+    Returns match score (0-100), overlap, missing skills, risks, improvement plan, and recruiter lens.
+    Automatically persists the analysis to MatchAnalysis table.
+    """
+    try:
+        # Get resume and JD text
+        resume_text = _get_resume_text(db, current_user.id, request.resume_id, request.resume_text)
+        jd_text, company, job_title = _get_jd_text(db, current_user.id, request.job_id, request.jd_text)
+        
+        # Analyze match
+        result = analyze_job_match(resume_text, jd_text)
+        
+        # Persist to database
+        match_analysis = MatchAnalysis(
+            user_id=current_user.id,
+            resume_id=request.resume_id,
+            job_id=request.job_id,
+            score=result.match_score,
+            overlap=result.overlap,
+            missing=result.missing,
+            risks=result.risks,
+            improvement_plan=result.improvement_plan,
+            recruiter_lens=result.recruiter_lens,
+            narrative=f"Match score: {result.match_score}%"
+        )
+        db.add(match_analysis)
+        db.commit()
+        db.refresh(match_analysis)
+        
+        logger.info(f"Match analysis created: id={match_analysis.id}, user_id={current_user.id}, score={result.match_score}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in job-match endpoint: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to analyze job match"
+        )
+
+
+@router.post("/recruiter-lens", response_model=RecruiterLensResponse)
+def recruiter_lens(
+    request: RecruiterLensRequest = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate recruiter perspective analysis.
+    
+    Returns first impression, red flags, strengths, shortlist decision, and fixes.
+    Optionally saves to Drive if save_to_drive is True.
+    """
+    try:
+        # Get resume and JD text
+        resume_text = _get_resume_text(db, current_user.id, request.resume_id, request.resume_text)
+        jd_text, company, job_title = _get_jd_text(db, current_user.id, request.job_id, request.jd_text)
+        
+        # Generate recruiter lens
+        result = generate_recruiter_lens(resume_text, jd_text)
+        
+        # Save to Drive if requested
+        if request.save_to_drive:
+            import json
+            content = json.dumps({
+                "first_impression": result.first_impression,
+                "red_flags": result.red_flags,
+                "strengths": result.strengths,
+                "shortlist_decision": result.shortlist_decision,
+                "fixes": result.fixes
+            }, indent=2)
+            _save_to_drive(
+                db, current_user.id,
+                f"Recruiter Lens - {job_title or 'Job'}",
+                content,
+                "interview_notes"
+            )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in recruiter-lens endpoint: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate recruiter lens"
+        )
+
+
+@router.post("/interview-pack", response_model=InterviewPackResponse)
+def interview_pack(
+    request: InterviewPackRequest = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate interview preparation pack.
+    
+    Returns 10 questions, STAR outlines, and 30/60/90 day plan.
+    Automatically persists to InterviewPack table and optionally saves to Drive.
+    """
+    try:
+        # Get resume and JD text
+        resume_text = _get_resume_text(db, current_user.id, request.resume_id, request.resume_text)
+        jd_text, company, job_title = _get_jd_text(db, current_user.id, request.job_id, request.jd_text)
+        
+        # Generate interview pack
+        result = generate_interview_pack(resume_text, jd_text)
+        
+        # Persist to database
+        interview_pack = InterviewPack(
+            user_id=current_user.id,
+            job_id=request.job_id,
+            content={
+                "questions": result.questions,
+                "star_outlines": result.star_outlines,
+                "plan_30_60_90": result.plan_30_60_90,
+                "additional_prep": result.additional_prep
+            }
+        )
+        db.add(interview_pack)
+        db.commit()
+        db.refresh(interview_pack)
+        
+        # Save to Drive if requested
+        if request.save_to_drive:
+            import json
+            content = json.dumps({
+                "questions": result.questions,
+                "star_outlines": result.star_outlines,
+                "plan_30_60_90": result.plan_30_60_90,
+                "additional_prep": result.additional_prep
+            }, indent=2)
+            _save_to_drive(
+                db, current_user.id,
+                f"Interview Pack - {job_title or 'Job'}",
+                content,
+                "interview_notes"
+            )
+        
+        logger.info(f"Interview pack created: id={interview_pack.id}, user_id={current_user.id}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in interview-pack endpoint: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate interview pack"
+        )
+
+
+@router.post("/outreach", response_model=OutreachResponse)
+def outreach(
+    request: OutreachRequest = Body(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate outreach message.
+    
+    Types: recruiter_followup, linkedin_dm, thank_you, referral_ask
+    Automatically persists to OutreachMessage table and optionally saves to Drive.
+    """
+    try:
+        # Validate message type
+        try:
+            outreach_type = OutreachType(request.message_type.lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid message_type. Must be one of: {[e.value for e in OutreachType]}"
+            )
+        
+        # Get resume and JD text
+        resume_text = _get_resume_text(db, current_user.id, request.resume_id, request.resume_text)
+        jd_text, company, job_title = _get_jd_text(db, current_user.id, request.job_id, request.jd_text)
+        
+        # Use provided company/title or from job posting
+        company = request.company or company
+        job_title = request.job_title or job_title
+        
+        # Generate outreach message
+        result = generate_outreach_message(
+            message_type=request.message_type,
+            resume_text=resume_text,
+            jd_text=jd_text,
+            company=company,
+            job_title=job_title
+        )
+        
+        # Persist to database
+        outreach_msg = OutreachMessage(
+            user_id=current_user.id,
+            job_id=request.job_id,
+            type=outreach_type,
+            content=result.message
+        )
+        db.add(outreach_msg)
+        db.commit()
+        db.refresh(outreach_msg)
+        
+        # Save to Drive if requested
+        if request.save_to_drive:
+            import json
+            content = json.dumps({
+                "type": request.message_type,
+                "subject": result.subject,
+                "message": result.message,
+                "tone": result.tone
+            }, indent=2)
+            _save_to_drive(
+                db, current_user.id,
+                f"Outreach - {request.message_type} - {job_title or 'Job'}",
+                content,
+                "cover_letter"  # Using cover_letter type for outreach messages
+            )
+        
+        logger.info(f"Outreach message created: id={outreach_msg.id}, user_id={current_user.id}, type={request.message_type}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in outreach endpoint: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate outreach message"
+        )
