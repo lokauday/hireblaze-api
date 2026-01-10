@@ -31,7 +31,7 @@ class Resume(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_user_created', 'user_id', 'created_at'),
+        Index('idx_resume_user_created', 'user_id', 'created_at'),
     )
     
     def __repr__(self):

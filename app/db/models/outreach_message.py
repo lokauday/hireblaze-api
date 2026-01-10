@@ -41,8 +41,8 @@ class OutreachMessage(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_user_type', 'user_id', 'type'),
-        Index('idx_job_created', 'job_id', 'created_at'),
+        Index('idx_outreach_message_user_type', 'user_id', 'type'),
+        Index('idx_outreach_message_job_created', 'job_id', 'created_at'),
     )
     
     def __repr__(self):

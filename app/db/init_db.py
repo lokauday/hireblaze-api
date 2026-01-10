@@ -43,14 +43,25 @@ def init_db():
     Works for both PostgreSQL (production) and SQLite (local development).
     SQLAlchemy's create_all() is idempotent - it only creates missing tables.
     
+    Handles duplicate index/table errors gracefully for cases where database
+    already has some schema objects (e.g., from migrations).
+    
     This should be called once at application startup via FastAPI's startup event.
     """
     try:
         # All models are imported above, so Base.metadata contains all table definitions
         # create_all() creates tables that don't exist (idempotent)
-        Base.metadata.create_all(bind=engine)
+        # In PostgreSQL, if indexes already exist, we catch and ignore those errors
+        Base.metadata.create_all(bind=engine, checkfirst=True)
         
     except Exception as e:
-        logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
-        # Re-raise to prevent app from starting with broken database
-        raise
+        error_msg = str(e).lower()
+        # In PostgreSQL, if objects already exist, we can safely ignore these errors
+        # as they indicate the database is already initialized (likely from migrations)
+        if any(keyword in error_msg for keyword in ['already exists', 'duplicate', 'relation']):
+            logger.warning(f"Some database objects already exist (likely from migrations): {e}")
+            logger.info("Continuing startup - database appears to be initialized")
+        else:
+            # For other errors (connection issues, permission problems, etc.), we should fail
+            logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
+            raise

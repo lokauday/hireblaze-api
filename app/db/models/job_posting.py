@@ -35,8 +35,8 @@ class JobPosting(Base):
     
     # Indexes
     __table_args__ = (
-        Index('idx_user_created', 'user_id', 'created_at'),
-        Index('idx_company_title', 'company', 'title'),
+        Index('idx_job_posting_user_created', 'user_id', 'created_at'),
+        Index('idx_job_posting_company_title', 'company', 'title'),
     )
     
     def __repr__(self):
