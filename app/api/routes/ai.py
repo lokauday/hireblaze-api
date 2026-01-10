@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.db.session import SessionLocal
 from app.db.models.user import User
 from app.db.models.resume import Resume
+from app.db.models.job import Job
 from app.db.models.job_posting import JobPosting
 from app.db.models.match_analysis import MatchAnalysis
 from app.db.models.interview_pack import InterviewPack
@@ -107,7 +108,10 @@ def _get_resume_text(db: Session, user_id: int, resume_id: Optional[int], resume
 
 
 def _get_jd_text(db: Session, user_id: int, job_id: Optional[int], jd_text: Optional[str]) -> tuple:
-    """Get job description text and metadata from ID or use provided text."""
+    """Get job description text and metadata from ID or use provided text.
+    
+    Supports both JobPosting (has jd_text) and Job (tracking model, uses notes as fallback).
+    """
     company = ""
     job_title = ""
     
@@ -115,10 +119,18 @@ def _get_jd_text(db: Session, user_id: int, job_id: Optional[int], jd_text: Opti
         return jd_text, company, job_title
     
     if job_id:
-        job = db.query(JobPosting).filter(JobPosting.id == job_id, JobPosting.user_id == user_id).first()
-        if not job:
-            raise HTTPException(status_code=404, detail="Job posting not found")
-        return job.jd_text, job.company or "", job.title or ""
+        # First try JobPosting (has full JD text)
+        job_posting = db.query(JobPosting).filter(JobPosting.id == job_id, JobPosting.user_id == user_id).first()
+        if job_posting:
+            return job_posting.jd_text, job_posting.company or "", job_posting.title or ""
+        
+        # Fallback to Job model (tracking - use notes as JD text)
+        job = db.query(Job).filter(Job.id == job_id, Job.user_id == user_id).first()
+        if job:
+            jd_content = job.notes or f"Position: {job.title}\nCompany: {job.company}\n{job.url or ''}"
+            return jd_content, job.company or "", job.title or ""
+        
+        raise HTTPException(status_code=404, detail="Job not found")
     
     raise HTTPException(status_code=400, detail="Either jd_text or job_id must be provided")
 

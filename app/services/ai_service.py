@@ -3,25 +3,36 @@ AI Service layer for FinalRoundAI++ features.
 
 Handles all AI operations with proper error handling, validation, and logging.
 Returns validated Pydantic models for all responses.
+Uses OpenAI if available, otherwise falls back to rule-based analysis.
 """
 import logging
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
-from openai import OpenAI, APIError
-from app.core.config import OPENAI_API_KEY
+from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client only if API key is available
-client = None
-if OPENAI_API_KEY:
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("OpenAI client initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
-else:
-    logger.warning("OPENAI_API_KEY not configured - AI endpoints will return 501")
+# Try to import OpenAI (optional)
+try:
+    from openai import OpenAI, APIError
+    from app.core.config import OPENAI_API_KEY
+    OPENAI_AVAILABLE = bool(OPENAI_API_KEY)
+    client = None
+    if OPENAI_AVAILABLE:
+        try:
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            logger.info("OpenAI client initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize OpenAI client: {e}, falling back to rule-based")
+            OPENAI_AVAILABLE = False
+    else:
+        logger.info("OPENAI_API_KEY not configured - using rule-based AI (works without API key)")
+except ImportError:
+    logger.info("OpenAI package not available - using rule-based AI")
+    OPENAI_AVAILABLE = False
+    client = None
+    OPENAI_API_KEY = None
+
 
 
 # ============================================
@@ -66,29 +77,26 @@ class OutreachResponse(BaseModel):
 # AI Service Functions
 # ============================================
 
-def _check_ai_configured() -> None:
-    """Check if AI is configured, raise HTTPException with 501 if not."""
-    if not OPENAI_API_KEY or not client:
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="AI service is not configured. Please set OPENAI_API_KEY environment variable."
-        )
+def _use_openai() -> bool:
+    """Check if OpenAI is available and configured."""
+    return OPENAI_AVAILABLE and client is not None
 
 
 def _call_openai_safe(prompt: str, model: str = "gpt-4o-mini", temperature: float = 0.7) -> str:
     """
-    Safely call OpenAI API with error handling.
+    Safely call OpenAI API with error handling. Falls back to rule-based if OpenAI not available.
     
     Returns:
         Generated text content
         
     Raises:
-        HTTPException: 502 if AI call fails
+        HTTPException: 502 if AI call fails and no fallback available
     """
     from fastapi import HTTPException, status
     
-    _check_ai_configured()
+    if not _use_openai():
+        # Fallback to rule-based (will be handled by individual functions)
+        raise ValueError("OpenAI not available, using rule-based fallback")
     
     try:
         response = client.chat.completions.create(
@@ -136,10 +144,11 @@ def _parse_json_response(text: str, default: Dict[str, Any] = None) -> Dict[str,
 def analyze_job_match(resume_text: str, jd_text: str) -> MatchScoreResponse:
     """
     Analyze match between resume and job description.
-    
-    Returns validated MatchScoreResponse with match score and analysis.
+    Uses OpenAI if available, otherwise falls back to rule-based analysis.
     """
-    prompt = f"""
+    # Try OpenAI first if available
+    if _use_openai():
+        prompt = f"""
 Analyze the match between this resume and job description. Return a JSON object with:
 - match_score: number 0-100 (overall match percentage)
 - overlap: {{skills: [], experiences: []}} (what matches)
@@ -156,48 +165,70 @@ Job Description:
 
 Return ONLY valid JSON, no markdown or extra text.
 """
+        try:
+            response_text = _call_openai_safe(prompt)
+            result = _parse_json_response(response_text, {
+                "match_score": 50,
+                "overlap": {},
+                "missing": {},
+                "risks": {},
+                "improvement_plan": {},
+                "recruiter_lens": {}
+            })
+            
+            match_score = float(result.get("match_score", 50))
+            match_score = max(0, min(100, match_score))
+            
+            return MatchScoreResponse(
+                match_score=match_score,
+                overlap=result.get("overlap", {}),
+                missing=result.get("missing", {}),
+                risks=result.get("risks", {}),
+                improvement_plan=result.get("improvement_plan", {}),
+                recruiter_lens=result.get("recruiter_lens", {})
+            )
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise
+            logger.warning(f"OpenAI call failed, using rule-based fallback: {e}")
+            # Fall through to rule-based
     
-    try:
-        response_text = _call_openai_safe(prompt)
-        result = _parse_json_response(response_text, {
-            "match_score": 50,
-            "overlap": {},
-            "missing": {},
-            "risks": {},
-            "improvement_plan": {},
-            "recruiter_lens": {}
-        })
-        
-        # Ensure match_score is a valid number
-        match_score = float(result.get("match_score", 50))
-        match_score = max(0, min(100, match_score))  # Clamp to 0-100
-        
-        return MatchScoreResponse(
-            match_score=match_score,
-            overlap=result.get("overlap", {}),
-            missing=result.get("missing", {}),
-            risks=result.get("risks", {}),
-            improvement_plan=result.get("improvement_plan", {}),
-            recruiter_lens=result.get("recruiter_lens", {})
-        )
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        logger.error(f"Error in analyze_job_match: {e}", exc_info=True)
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to analyze job match. Please try again."
-        )
+    # Rule-based fallback (simple keyword matching)
+    logger.info("Using rule-based job match analysis")
+    import re
+    from collections import Counter
+    
+    resume_lower = resume_text.lower()
+    jd_lower = jd_text.lower()
+    
+    # Extract common tech keywords
+    tech_keywords = ["python", "java", "javascript", "react", "node", "sql", "aws", "docker", "git"]
+    resume_keywords = [kw for kw in tech_keywords if kw in resume_lower]
+    jd_keywords = [kw for kw in tech_keywords if kw in jd_lower]
+    
+    overlap_skills = list(set(resume_keywords) & set(jd_keywords))
+    missing_skills = list(set(jd_keywords) - set(resume_keywords))
+    
+    # Simple match score calculation
+    if len(jd_keywords) == 0:
+        match_score = 70.0  # Default if no keywords found
+    else:
+        match_score = min(100.0, (len(overlap_skills) / len(jd_keywords)) * 100)
+    
+    return MatchScoreResponse(
+        match_score=round(match_score, 1),
+        overlap={"skills": overlap_skills, "technical_skills": overlap_skills},
+        missing={"skills": missing_skills[:10], "technical_skills": missing_skills[:8]},
+        risks={"flags": [] if len(missing_skills) <= 3 else [f"Missing {len(missing_skills)} key skills"], "concerns": []},
+        improvement_plan={"actions": [f"Add experience with: {', '.join(missing_skills[:3])}"] if missing_skills else ["Resume looks well-matched"]},
+        recruiter_lens={"summary": f"Match score: {match_score:.0f}% - {'Strong candidate' if match_score >= 75 else 'Partial match'}", "decision": "yes" if match_score >= 75 else ("maybe" if match_score >= 60 else "no")}
+    )
 
 
 def generate_recruiter_lens(resume_text: str, jd_text: str) -> RecruiterLensResponse:
-    """
-    Generate recruiter perspective analysis.
-    
-    Returns validated RecruiterLensResponse.
-    """
-    prompt = f"""
+    """Generate recruiter perspective analysis. Uses OpenAI if available, otherwise rule-based."""
+    if _use_openai():
+        prompt = f"""
 You are a senior recruiter reviewing this resume for this job. Provide a JSON response with:
 - first_impression: brief summary (1-2 sentences)
 - red_flags: array of concerning items
@@ -213,42 +244,61 @@ Job Description:
 
 Return ONLY valid JSON, no markdown or extra text.
 """
+        try:
+            response_text = _call_openai_safe(prompt)
+            result = _parse_json_response(response_text, {
+                "first_impression": "Initial review in progress",
+                "red_flags": [],
+                "strengths": [],
+                "shortlist_decision": "maybe",
+                "fixes": []
+            })
+            
+            return RecruiterLensResponse(
+                first_impression=str(result.get("first_impression", "")),
+                red_flags=result.get("red_flags", []),
+                strengths=result.get("strengths", []),
+                shortlist_decision=str(result.get("shortlist_decision", "maybe")),
+                fixes=result.get("fixes", [])
+            )
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise
+            logger.warning(f"OpenAI call failed, using rule-based fallback: {e}")
     
-    try:
-        response_text = _call_openai_safe(prompt)
-        result = _parse_json_response(response_text, {
-            "first_impression": "Initial review in progress",
-            "red_flags": [],
-            "strengths": [],
-            "shortlist_decision": "maybe",
-            "fixes": []
-        })
-        
-        return RecruiterLensResponse(
-            first_impression=str(result.get("first_impression", "")),
-            red_flags=result.get("red_flags", []),
-            strengths=result.get("strengths", []),
-            shortlist_decision=str(result.get("shortlist_decision", "maybe")),
-            fixes=result.get("fixes", [])
-        )
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        logger.error(f"Error in generate_recruiter_lens: {e}", exc_info=True)
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to generate recruiter lens. Please try again."
-        )
+    # Rule-based fallback
+    logger.info("Using rule-based recruiter lens analysis")
+    resume_lower = resume_text.lower()
+    jd_lower = jd_text.lower()
+    
+    # Simple keyword matching for score estimation
+    tech_keywords = ["python", "java", "javascript", "react", "node", "sql", "aws"]
+    resume_keywords = [kw for kw in tech_keywords if kw in resume_lower]
+    jd_keywords = [kw for kw in tech_keywords if kw in jd_lower]
+    overlap_count = len(set(resume_keywords) & set(jd_keywords))
+    score = min(100.0, (overlap_count / max(1, len(jd_keywords))) * 100) if jd_keywords else 65.0
+    
+    strengths = ["Strong technical background"] if len(resume_keywords) >= 3 else ["Relevant experience"]
+    if len(resume_text) > 1000:
+        strengths.append("Comprehensive resume")
+    
+    red_flags = [] if score >= 60 else ["Limited match with required qualifications"]
+    if len(resume_text) < 500:
+        red_flags.append("Resume may be too brief")
+    
+    return RecruiterLensResponse(
+        first_impression=f"Candidate shows approximately {score:.0f}% match with role requirements. {'Strong technical background' if score >= 70 else 'Some gaps in required skills'}.",
+        red_flags=red_flags,
+        strengths=strengths,
+        shortlist_decision="yes" if score >= 75 else ("maybe" if score >= 60 else "no"),
+        fixes=["Add more relevant skills to resume", "Highlight quantifiable achievements"] if score < 70 else ["Continue highlighting relevant experience"]
+    )
 
 
 def generate_interview_pack(resume_text: str, jd_text: str) -> InterviewPackResponse:
-    """
-    Generate interview preparation pack.
-    
-    Returns validated InterviewPackResponse with questions, STAR outlines, and 30/60/90 plan.
-    """
-    prompt = f"""
+    """Generate interview preparation pack. Uses OpenAI if available, otherwise rule-based templates."""
+    if _use_openai():
+        prompt = f"""
 Generate an interview preparation pack for this candidate and job. Return JSON with:
 - questions: array of 10 interview questions (mix of technical, behavioral, role-specific)
 - star_outlines: object mapping question keys to STAR format outlines
@@ -263,31 +313,53 @@ Job Description:
 
 Return ONLY valid JSON, no markdown or extra text.
 """
+        try:
+            response_text = _call_openai_safe(prompt)
+            result = _parse_json_response(response_text, {
+                "questions": [],
+                "star_outlines": {},
+                "plan_30_60_90": {"30_days": "", "60_days": "", "90_days": ""},
+                "additional_prep": {}
+            })
+            
+            return InterviewPackResponse(
+                questions=result.get("questions", []),
+                star_outlines=result.get("star_outlines", {}),
+                plan_30_60_90=result.get("plan_30_60_90", {"30_days": "", "60_days": "", "90_days": ""}),
+                additional_prep=result.get("additional_prep", {})
+            )
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise
+            logger.warning(f"OpenAI call failed, using rule-based fallback: {e}")
     
-    try:
-        response_text = _call_openai_safe(prompt)
-        result = _parse_json_response(response_text, {
-            "questions": [],
-            "star_outlines": {},
-            "plan_30_60_90": {"30_days": "", "60_days": "", "90_days": ""},
-            "additional_prep": {}
-        })
-        
-        return InterviewPackResponse(
-            questions=result.get("questions", []),
-            star_outlines=result.get("star_outlines", {}),
-            plan_30_60_90=result.get("plan_30_60_90", {"30_days": "", "60_days": "", "90_days": ""}),
-            additional_prep=result.get("additional_prep", {})
-        )
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        logger.error(f"Error in generate_interview_pack: {e}", exc_info=True)
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to generate interview pack. Please try again."
-        )
+    # Rule-based fallback with common interview questions
+    logger.info("Using rule-based interview pack generation")
+    questions = [
+        "Tell me about yourself and your background.",
+        "Why are you interested in this position?",
+        "What are your greatest strengths?",
+        "What is your biggest weakness and how are you working to improve it?",
+        "Tell me about a challenging project you worked on.",
+        "How do you handle working under pressure?",
+        "Describe a time when you had to learn something new quickly.",
+        "Tell me about a time you disagreed with a team member or manager.",
+        "Where do you see yourself in 5 years?",
+        "Do you have any questions for us?"
+    ]
+    
+    star_outlines = {f"q{i+1}": "Situation: [Context]\nTask: [What needed to be done]\nAction: [What you did]\nResult: [Outcome]" for i in range(10)}
+    
+    return InterviewPackResponse(
+        questions=questions,
+        star_outlines=star_outlines,
+        plan_30_60_90={
+            "30_days": "Complete onboarding, meet team, learn tools and processes, start contributing to smaller tasks.",
+            "60_days": "Take ownership of projects, establish relationships, implement improvements, deliver first milestones.",
+            "90_days": "Fully integrated, leading initiatives, mentoring others, demonstrating measurable impact."
+        },
+        additional_prep={"company_research": ["Research company news and products", "Understand mission and values", "Review team structure"], "role_preparation": ["Review job requirements", "Prepare examples for each requirement", "Research common interview questions"]}
+    )
 
 
 def generate_outreach_message(
@@ -297,28 +369,18 @@ def generate_outreach_message(
     company: str = "",
     job_title: str = ""
 ) -> OutreachResponse:
-    """
-    Generate outreach message based on type.
-    
-    Args:
-        message_type: One of "recruiter_followup", "linkedin_dm", "thank_you", "referral_ask"
-        resume_text: Candidate resume text
-        jd_text: Job description text
-        company: Company name (optional)
-        job_title: Job title (optional)
+    """Generate outreach message. Uses OpenAI if available, otherwise rule-based templates."""
+    if _use_openai():
+        type_prompts = {
+            "recruiter_followup": "Write a professional follow-up email to a recruiter after applying. Be concise and highlight key qualifications.",
+            "linkedin_dm": "Write a brief, professional LinkedIn DM to connect about this role. Keep it under 200 words and personalized.",
+            "thank_you": "Write a thank-you email after an interview. Express gratitude and reinforce interest.",
+            "referral_ask": "Write a message asking for a referral for this position. Be respectful and provide context."
+        }
         
-    Returns validated OutreachResponse.
-    """
-    type_prompts = {
-        "recruiter_followup": "Write a professional follow-up email to a recruiter after applying. Be concise and highlight key qualifications.",
-        "linkedin_dm": "Write a brief, professional LinkedIn DM to connect about this role. Keep it under 200 words and personalized.",
-        "thank_you": "Write a thank-you email after an interview. Express gratitude and reinforce interest.",
-        "referral_ask": "Write a message asking for a referral for this position. Be respectful and provide context."
-    }
-    
-    base_prompt = type_prompts.get(message_type, type_prompts["recruiter_followup"])
-    
-    prompt = f"""
+        base_prompt = type_prompts.get(message_type, type_prompts["recruiter_followup"])
+        
+        prompt = f"""
 {base_prompt}
 
 Candidate Background:
@@ -336,26 +398,56 @@ Return a JSON object with:
 
 Return ONLY valid JSON, no markdown or extra text.
 """
+        try:
+            response_text = _call_openai_safe(prompt, temperature=0.8)
+            result = _parse_json_response(response_text, {
+                "message": "Message generation in progress...",
+                "subject": "",
+                "tone": "professional"
+            })
+            
+            return OutreachResponse(
+                message=str(result.get("message", "")),
+                subject=result.get("subject"),
+                tone=str(result.get("tone", "professional"))
+            )
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise
+            logger.warning(f"OpenAI call failed, using rule-based fallback: {e}")
     
-    try:
-        response_text = _call_openai_safe(prompt, temperature=0.8)
-        result = _parse_json_response(response_text, {
-            "message": "Message generation in progress...",
-            "subject": "",
-            "tone": "professional"
-        })
-        
-        return OutreachResponse(
-            message=str(result.get("message", "")),
-            subject=result.get("subject"),
-            tone=str(result.get("tone", "professional"))
-        )
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise
-        logger.error(f"Error in generate_outreach_message: {e}", exc_info=True)
-        from fastapi import HTTPException, status
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to generate outreach message. Please try again."
-        )
+    # Rule-based templates
+    logger.info(f"Using rule-based outreach message generation for type: {message_type}")
+    import re
+    name_match = re.search(r"^([A-Z][a-z]+ [A-Z][a-z]+)", resume_text[:200])
+    candidate_name = name_match.group(1) if name_match else "[Your Name]"
+    
+    templates = {
+        "recruiter_followup": {
+            "subject": f"Following up on {job_title or 'position'} at {company or '[Company]'}",
+            "message": f"Dear Hiring Manager,\n\nI hope this message finds you well. I wanted to follow up on my application for the {job_title or 'position'} at {company or 'your company'}.\n\nI'm particularly excited about this opportunity and believe my background aligns well with the role. I've attached my resume for your review and would welcome the opportunity to discuss how my experience can contribute to your team.\n\nThank you for considering my application.\n\nBest regards,\n{candidate_name}",
+            "tone": "professional and courteous"
+        },
+        "linkedin_dm": {
+            "subject": None,
+            "message": f"Hi [Name],\n\nI noticed you're connected to {company or 'this company'}. I recently applied for the {job_title or 'position'} and was hoping to connect.\n\nI have relevant experience and would love to learn more about the role and team. Would you be open to a brief conversation?\n\nThanks!\n{candidate_name}",
+            "tone": "casual but professional"
+        },
+        "thank_you": {
+            "subject": f"Thank you - {job_title or 'Interview'}",
+            "message": f"Dear [Interviewer Name],\n\nThank you for taking the time to speak with me today about the {job_title or 'position'} at {company or 'your company'}. I truly enjoyed our conversation.\n\nI'm excited about the possibility of contributing to your team and look forward to hearing from you about next steps.\n\nBest regards,\n{candidate_name}",
+            "tone": "grateful and professional"
+        },
+        "referral_ask": {
+            "subject": f"Referral Request - {job_title or 'Position'} at {company or '[Company]'}",
+            "message": f"Hi [Name],\n\nHope you're doing well! I'm reaching out because {company or 'your company'} has an opening for a {job_title or 'position'} that seems like a great fit for my background.\n\nI've been working in this field and would be grateful if you'd be willing to refer me or provide any insights about the company culture.\n\nI've attached my resume for your review. Let me know if you'd be open to helping.\n\nThanks so much!\n{candidate_name}",
+            "tone": "friendly and respectful"
+        }
+    }
+    
+    template = templates.get(message_type.lower(), templates["recruiter_followup"])
+    return OutreachResponse(
+        message=template["message"],
+        subject=template.get("subject"),
+        tone=template["tone"]
+    )
