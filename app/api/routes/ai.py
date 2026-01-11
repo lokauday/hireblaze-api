@@ -56,7 +56,7 @@ class JobMatchRequest(BaseModel):
     job_id: Optional[int] = Field(None, description="Job posting ID from database")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "resume_id": 1,
                 "job_id": 2
