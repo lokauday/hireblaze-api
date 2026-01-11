@@ -16,7 +16,7 @@ from app.services.ai_service import (
     generate_interview_pack,
     generate_outreach_message
 )
-from app.services.ai_engine import tailor_resume_for_jd, generate_cover_letter
+from app.services.ai_engine import tailor_resume, generate_cover_letter
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +137,9 @@ def generate_application_pack(
         logger.info(f"Generating outreach message for job pack: user_id={user.id}, job_id={job_id}")
         try:
             outreach_response = generate_outreach_message(
+                message_type="recruiter_followup",
                 resume_text=resume_text_content,
                 jd_text=jd_text_content,
-                message_type="recruiter_followup",
                 company=job_company,
                 job_title=job_title_value
             )
