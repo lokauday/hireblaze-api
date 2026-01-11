@@ -94,7 +94,7 @@ def generate_application_pack(
         # 1. Generate tailored resume
         logger.info(f"Generating tailored resume for job pack: user_id={user.id}, job_id={job_id}")
         try:
-            tailored_resume = tailor_resume_for_jd(resume_text_content, jd_text_content)
+            tailored_resume = tailor_resume(resume_text_content, jd_text_content)
             resume_doc = Document(
                 user_id=user.id,
                 title=f"Tailored Resume - {job_title_value or 'Job'}",
