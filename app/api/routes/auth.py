@@ -8,6 +8,7 @@ from app.db.session import SessionLocal
 from app.db.models.user import User
 from app.db.models.subscription import Subscription
 from app.core.security import hash_password, verify_password, create_access_token
+from app.core.auth_dependency import get_current_user
 from app.schemas.auth import SignupRequest, LoginRequest
 
 logger = logging.getLogger(__name__)
@@ -452,3 +453,45 @@ async def login(request: Request, db: Session = Depends(get_db)):
             exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error during login")
+
+
+# ✅ GET /auth/me - Get current user info with plan and usage
+@router.get("/me")
+def get_me(
+    email: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get current authenticated user information including plan and usage.
+    
+    Returns:
+    - id: User ID
+    - email: User email
+    - full_name: User full name
+    - plan: Current plan ("free" or "premium")
+    - usage: Daily AI usage { used: int, limit: int }
+    """
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Get plan
+    plan = user.plan or "free"
+    
+    # Get today's AI usage
+    from app.core.gating import get_today_ai_usage
+    from app.core.config import MAX_FREE_AI_CALLS_PER_DAY
+    
+    today_usage = get_today_ai_usage(db, user.id)
+    usage_limit = MAX_FREE_AI_CALLS_PER_DAY if plan == "free" else 999999  # Unlimited for premium
+    
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "plan": plan,
+        "usage": {
+            "used": today_usage,
+            "limit": usage_limit,
+        }
+    }
