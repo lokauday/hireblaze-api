@@ -18,6 +18,7 @@ from app.db.models.outreach_message import OutreachMessage, OutreachType
 from app.db.models.document import Document
 from app.core.auth_dependency import get_current_user, get_current_user_obj, get_db
 from app.core.gating import enforce_ai_limit, increment_ai_usage
+from app.services.ai_explain_service import explain_changes
 from app.services.ai_service import (
     analyze_job_match,
     generate_recruiter_lens,
@@ -97,6 +98,10 @@ class TransformRequest(BaseModel):
 class TransformResponse(BaseModel):
     """Response model for text transformation."""
     output: str = Field(..., description="Transformed markdown content")
+    explanation: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Explanation of changes (what changed, why changed, keywords added)"
+    )
 
 
 # ============================================
@@ -461,18 +466,31 @@ def transform(
             )
         
         # Transform text using AI
+        before_text = request.text
         result = transform_text(
             mode=request.mode,
-            text=request.text,
+            text=before_text,
             context=request.context or {}
         )
+        
+        # Generate explanation of changes
+        explanation = None
+        try:
+            explanation = explain_changes(
+                before=before_text[:2000],  # Limit for explanation
+                after=result[:2000],
+                mode=request.mode
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate explanation: {e}", exc_info=True)
+            # Continue without explanation - not critical
         
         # Increment usage count after successful transformation
         increment_ai_usage(db, current_user.id)
         
         logger.info(f"Text transformed: mode={request.mode}, user_id={current_user.id}, plan={current_user.plan}, length={len(result)}")
         
-        return TransformResponse(output=result)
+        return TransformResponse(output=result, explanation=explanation)
         
     except HTTPException:
         raise
