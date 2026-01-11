@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # ✅ Import All API Routes (required - fail startup if missing)
 from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
 from app.api.routes import resume_versions
-from app.api.routes import billing, billing_webhook, system
+from app.api.routes import billing, billing_webhook, system, health
 from app.api.routes.documents import router as documents_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.history import router as history_router
