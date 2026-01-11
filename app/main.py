@@ -63,18 +63,25 @@ async def startup_event():
     """
     logger.info("Initializing database...")
     
-    # Run Alembic migrations safely (idempotent)
-    try:
-        from alembic.config import Config
-        from alembic import command
-        import os
-        
-        alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Alembic migrations completed")
-    except Exception as e:
-        logger.warning(f"Alembic migrations failed (non-fatal): {e}. Tables will be created via init_db() if needed.")
-        # Continue with init_db as fallback
+    # Run Alembic migrations only if RUN_MIGRATIONS env var is set to true
+    # In production, migrations should be run separately (e.g., via CI/CD or manual deployment step)
+    # This keeps startup fast and avoids migration issues in production
+    import os
+    run_migrations = os.getenv("RUN_MIGRATIONS", "false").lower() in ("true", "1", "yes")
+    
+    if run_migrations:
+        try:
+            from alembic.config import Config
+            from alembic import command
+            
+            alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+            command.upgrade(alembic_cfg, "head")
+            logger.info("Alembic migrations completed")
+        except Exception as e:
+            logger.warning(f"Alembic migrations failed (non-fatal): {e}. Tables will be created via init_db() if needed.")
+            # Continue with init_db as fallback
+    else:
+        logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for schema initialization.")
     
     # Fallback: Initialize database tables (idempotent - only creates missing tables)
     init_db()

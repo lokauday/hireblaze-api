@@ -8,6 +8,8 @@ IMPORTANT: All models MUST be imported here before create_all() is called,
 otherwise their tables will not be created.
 """
 import logging
+from sqlalchemy.exc import ProgrammingError
+from psycopg2.errors import DuplicateTable, DuplicateObject
 from app.db.session import engine
 from app.db.base import Base
 
@@ -54,14 +56,26 @@ def init_db():
         # In PostgreSQL, if indexes already exist, we catch and ignore those errors
         Base.metadata.create_all(bind=engine, checkfirst=True)
         
-    except Exception as e:
+    except ProgrammingError as e:
+        # Handle PostgreSQL duplicate object errors (indexes, tables, etc.)
+        # These indicate the database is already initialized (likely from migrations)
+        error_code = getattr(e.orig, 'pgcode', None) if hasattr(e, 'orig') else None
         error_msg = str(e).lower()
-        # In PostgreSQL, if objects already exist, we can safely ignore these errors
-        # as they indicate the database is already initialized (likely from migrations)
-        if any(keyword in error_msg for keyword in ['already exists', 'duplicate', 'relation']):
-            logger.warning(f"Some database objects already exist (likely from migrations): {e}")
+        
+        # PostgreSQL error codes: 42P07 = duplicate_table, 42710 = duplicate_object
+        is_duplicate = (
+            error_code in ('42P07', '42710') or
+            any(keyword in error_msg for keyword in ['already exists', 'duplicate', 'relation'])
+        )
+        
+        if is_duplicate:
+            logger.info(f"Database objects already exist (from migrations or previous initialization): {e.orig.pgerror if hasattr(e, 'orig') and hasattr(e.orig, 'pgerror') else str(e)}")
             logger.info("Continuing startup - database appears to be initialized")
         else:
-            # For other errors (connection issues, permission problems, etc.), we should fail
+            # For other programming errors, we should fail
             logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
             raise
+    except Exception as e:
+        # For non-programming errors (connection issues, permission problems, etc.), we should fail
+        logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
+        raise
