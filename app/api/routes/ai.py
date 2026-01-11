@@ -20,6 +20,7 @@ from app.core.auth_dependency import get_current_user, get_current_user_obj, get
 from app.core.gating import enforce_ai_limit, increment_ai_usage
 from app.services.ai_explain_service import explain_changes
 from app.services.job_pack_service import generate_application_pack
+from app.schemas.ai import JobPackRequest, JobPackResponse
 from app.services.ai_service import (
     analyze_job_match,
     generate_recruiter_lens,
