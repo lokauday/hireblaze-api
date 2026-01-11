@@ -146,7 +146,6 @@ api_v1_router = APIRouter(prefix="/api/v1")
 api_v1_router.include_router(auth.router)
 api_v1_router.include_router(resume.router)
 api_v1_router.include_router(resume_versions.router)
-api_v1_router.include_router(resume_versions.router)
 api_v1_router.include_router(jd.router, tags=["AI"])  # JD parsing
 api_v1_router.include_router(ats.router, tags=["AI"])  # ATS scoring
 api_v1_router.include_router(cover_letter.router, tags=["AI"])  # Cover letter generation
