@@ -101,6 +101,8 @@ allowed_origins_list = [
     "http://127.0.0.1:3000",
     "http://localhost:3001",  # Next.js fallback port when 3000 is in use
     "http://127.0.0.1:3001",
+    "http://localhost:3002",  # Next.js fallback port when 3000 and 3001 are in use
+    "http://127.0.0.1:3002",
 ]
 
 # Add origins from ALLOWED_ORIGINS env var if provided
