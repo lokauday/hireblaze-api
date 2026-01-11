@@ -13,6 +13,8 @@ from app.db.models.ai_usage import AIUsage
 from app.db.models.ai_run import AiRun
 from app.db.models.ai_memory import AiMemory
 from app.db.models.resume import Resume
+from app.db.models.resume_version import ResumeVersion
+from app.db.models.company_pack import CompanyPack
 from app.db.models.job import Job, JobDescription
 from app.db.models.job_posting import JobPosting
 from app.db.models.match_analysis import MatchAnalysis
@@ -34,6 +36,8 @@ __all__ = [
     "AiRun",
     "AiMemory",
     "Resume",
+    "ResumeVersion",
+    "CompanyPack",
     "ResumeVersion",
     "CompanyPack",
     "Job",

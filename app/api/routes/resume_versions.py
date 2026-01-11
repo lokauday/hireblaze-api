@@ -2,7 +2,7 @@
 Resume Version endpoints for managing resume versions per job.
 """
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -11,7 +11,8 @@ from app.db.session import SessionLocal
 from app.db.models.user import User
 from app.db.models.job import Job
 from app.db.models.resume_version import ResumeVersion
-from app.core.auth_dependency import get_current_user, get_current_user_obj, get_db
+from app.core.auth_dependency import get_current_user, get_current_user_obj
+from app.db.session import SessionLocal
 
 logger = logging.getLogger(__name__)
 
