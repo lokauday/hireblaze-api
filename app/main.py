@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # ✅ Import All API Routes (required - fail startup if missing)
 from app.api.routes import auth, resume, jd, ats, cover_letter, tailor, interview, application, usage
+from app.api.routes import resume_versions
 from app.api.routes import billing, billing_webhook, system
 from app.api.routes.documents import router as documents_router
 from app.api.routes.jobs import router as jobs_router
@@ -144,6 +145,7 @@ api_v1_router = APIRouter(prefix="/api/v1")
 # ✅ Register API Routes under /api/v1 prefix
 api_v1_router.include_router(auth.router)
 api_v1_router.include_router(resume.router)
+api_v1_router.include_router(resume_versions.router)
 api_v1_router.include_router(jd.router, tags=["AI"])  # JD parsing
 api_v1_router.include_router(ats.router, tags=["AI"])  # ATS scoring
 api_v1_router.include_router(cover_letter.router, tags=["AI"])  # Cover letter generation

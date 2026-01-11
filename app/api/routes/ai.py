@@ -20,7 +20,7 @@ from app.core.auth_dependency import get_current_user, get_current_user_obj, get
 from app.core.gating import enforce_ai_limit, increment_ai_usage
 from app.services.ai_explain_service import explain_changes
 from app.services.job_pack_service import generate_application_pack
-from app.schemas.ai import JobPackRequest, JobPackResponse
+from app.schemas.ai import JobPackRequest, JobPackResponse, CompanyPackRequest, CompanyPackResponse
 from app.services.ai_service import (
     analyze_job_match,
     generate_recruiter_lens,
@@ -560,4 +560,62 @@ def generate_job_pack(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate job pack"
+        )
+
+
+@router.post("/company-pack", response_model=CompanyPackResponse)
+def generate_company_pack_endpoint(
+    request: CompanyPackRequest = Body(...),
+    current_user: User = Depends(get_current_user_obj),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate company research pack for a job.
+    
+    Creates comprehensive research including:
+    - Company overview
+    - Competitors
+    - Interview angles
+    - Questions to ask
+    - Role risks
+    - 30-60-90 day plan
+    
+    Requires authentication. Premium feature (or within free limits).
+    """
+    try:
+        # Enforce usage limits
+        enforce_ai_limit(db, current_user)
+        
+        # Generate company pack
+        result = generate_company_pack(
+            db=db,
+            user=current_user,
+            job_id=request.job_id,
+            company=request.company,
+            job_title=request.job_title,
+            jd_text=request.jd_text,
+            save_to_drive=request.save_to_drive,
+        )
+        
+        # Increment usage
+        increment_ai_usage(db, current_user.id)
+        
+        logger.info(f"Company pack generated: user_id={current_user.id}, job_id={request.job_id}, doc_id={result.get('document_id')}")
+        
+        return CompanyPackResponse(**result)
+        
+    except ValueError as e:
+        logger.warning(f"Invalid request for company pack: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating company pack: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate company pack"
         )

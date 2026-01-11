@@ -34,6 +34,8 @@ __all__ = [
     "AiRun",
     "AiMemory",
     "Resume",
+    "ResumeVersion",
+    "CompanyPack",
     "Job",
     "JobDescription",
     "JobPosting",
