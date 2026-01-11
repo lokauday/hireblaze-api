@@ -249,7 +249,11 @@ def handle_checkout_session_completed(event_data: Dict, db: Session) -> Subscrip
     subscription.status = "active"
     
     # Sync to User model
-    user.plan = subscription.plan_type if subscription.plan_type in ["free", "premium"] else "premium"
+    # Normalize plan: map "premium" to "pro", keep "pro" and "elite" as-is
+    plan_type = subscription.plan_type
+    if plan_type == "premium":
+        plan_type = "pro"
+    user.plan = plan_type if plan_type in ["free", "pro", "elite"] else "free"
     user.stripe_customer_id = customer_id
     user.stripe_subscription_id = subscription_id
     user.stripe_price_id = price_id
@@ -376,7 +380,11 @@ def handle_subscription_updated(event_data: Dict, db: Session) -> Subscription:
     # Sync to User model
     user = db.query(User).filter(User.id == subscription.user_id).first()
     if user:
-        user.plan = subscription.plan_type if subscription.plan_type in ["free", "premium"] else "premium"
+        # Normalize plan: map "premium" to "pro", keep "pro" and "elite" as-is
+        plan_type = subscription.plan_type
+        if plan_type == "premium":
+            plan_type = "pro"
+        user.plan = plan_type if plan_type in ["free", "pro", "elite"] else "free"
         user.plan_status = status
         user.current_period_end = period_end
         if price_id:
