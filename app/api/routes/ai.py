@@ -19,6 +19,7 @@ from app.db.models.document import Document
 from app.core.auth_dependency import get_current_user, get_current_user_obj, get_db
 from app.core.gating import enforce_ai_limit, increment_ai_usage
 from app.services.ai_explain_service import explain_changes
+from app.services.job_pack_service import generate_application_pack
 from app.services.ai_service import (
     analyze_job_match,
     generate_recruiter_lens,
@@ -500,4 +501,62 @@ def transform(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to transform text"
+        )
+
+
+@router.post("/job-pack", response_model=JobPackResponse)
+def generate_job_pack(
+    request: JobPackRequest = Body(...),
+    current_user: User = Depends(get_current_user_obj),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a complete application pack for a job.
+    
+    Creates and saves to Drive:
+    - Tailored resume (JD-optimized)
+    - Cover letter
+    - Outreach message (recruiter followup)
+    - Interview pack (STAR answers, 30/60/90 plan)
+    
+    Requires authentication. Premium feature (or within free limits).
+    """
+    try:
+        # Enforce usage limits (each component counts)
+        # For now, allow premium users and check limits per component
+        # Free users: limit to 1 job pack per day (4 AI calls)
+        enforce_ai_limit(db, current_user)  # Check initial limit
+        
+        result = generate_application_pack(
+            db=db,
+            user=current_user,
+            resume_id=request.resume_id,
+            job_id=request.job_id,
+            resume_text=request.resume_text,
+            jd_text=request.jd_text,
+            company=request.company,
+            job_title=request.job_title
+        )
+        
+        # Increment usage for job pack (counts as 1 call, not 4)
+        increment_ai_usage(db, current_user.id)
+        
+        logger.info(f"Job pack generated: user_id={current_user.id}, job_id={request.job_id}, docs={len([d for d in [result['resume_doc_id'], result['cover_letter_doc_id'], result['outreach_doc_id'], result['interview_pack_doc_id']] if d])}")
+        
+        return JobPackResponse(**result)
+        
+    except ValueError as e:
+        logger.warning(f"Invalid request for job pack: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating job pack: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate job pack"
         )
