@@ -157,6 +157,7 @@ api_v1_router.include_router(usage.router)  # Usage tracking and quota info - no
 api_v1_router.include_router(billing.router)  # Billing (checkout, portal)
 api_v1_router.include_router(billing_webhook.router)  # Stripe webhooks
 api_v1_router.include_router(system.router)
+api_v1_router.include_router(health.router)
 # ✅ Core routes (required - must be available)
 api_v1_router.include_router(documents_router)  # AI Drive - Documents CRUD - now /api/v1/documents
 api_v1_router.include_router(jobs_router)  # Job Tracker
