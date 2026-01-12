@@ -261,46 +261,6 @@ def weekly_report(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    records = db.query(InterviewEvaluation) \
-        .join(InterviewSession) \
-        .filter(InterviewSession.user_id == user.id) \
-        .order_by(InterviewEvaluation.id.desc()) \
-        .limit(2) \
-        .all()
-
-    if len(records) < 2:
-        return {"error": "Need at least 2 interviews to generate report"}
-
-    latest = records[0]
-    previous = records[1]
-
-    latest_scores = {
-        "communication": latest.communication_score,
-        "technical": latest.technical_score,
-        "confidence": latest.confidence_score,
-        "role_fit": latest.role_fit_score,
-    }
-
-    previous_scores = {
-        "communication": previous.communication_score,
-        "technical": previous.technical_score,
-        "confidence": previous.confidence_score,
-        "role_fit": previous.role_fit_score,
-    }
-
-    report = generate_weekly_progress_report(previous_scores, latest_scores)
-
-    return {
-        "latest_scores": latest_scores,
-        "previous_scores": previous_scores,
-        "weekly_report": report
-    }
-# ✅ WEEKLY AI CAREER PROGRESS REPORT
-@router.get("/weekly-report")
-def weekly_report(
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user)
-):
     records = (
         db.query(InterviewEvaluation)
         .join(InterviewSession)
