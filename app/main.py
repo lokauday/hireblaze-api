@@ -88,7 +88,7 @@ async def startup_event():
         run_migrations = run_migrations_env.lower() in ("true", "1", "yes")
         
         if run_migrations:
-            logger.info(f"Checking database migrations (RUN_MIGRATIONS={run_migrations_env})...")
+            logger.info("Running database migrations...")
             try:
                 from alembic.config import Config
                 from alembic import command
@@ -96,119 +96,54 @@ async def startup_event():
                 from alembic.runtime.migration import MigrationContext
                 from sqlalchemy import text
                 from app.db.session import engine
-                from urllib.parse import urlparse
-                
-                # Log database connection info (safe - no passwords)
-                try:
-                    parsed_db_url = urlparse(config.DATABASE_URL)
-                    logger.info(f"Database: {parsed_db_url.hostname}:{parsed_db_url.port or 'default'}/{parsed_db_url.path.lstrip('/')}")
-                except Exception:
-                    pass  # Non-critical logging
                 
                 alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+                alembic_cfg.set_main_option("version_table_schema", "public")
                 script = ScriptDirectory.from_config(alembic_cfg)
                 head_revision = script.get_current_head()
-                logger.info(f"Head revision: {head_revision}")
                 
-                # Set version table schema to 'public' explicitly
-                alembic_cfg.set_main_option("version_table_schema", "public")
-                
-                # Use PostgreSQL advisory lock to prevent concurrent migrations
-                # Lock ID: 987654321 (as requested)
                 ADVISORY_LOCK_ID = 987654321
                 lock_acquired = False
                 
-                with engine.connect() as connection:
-                    # Try to acquire advisory lock (PostgreSQL only)
+                with engine.begin() as connection:
                     if config.DATABASE_URL.startswith("postgresql"):
                         try:
                             lock_result = connection.execute(text(f"SELECT pg_try_advisory_lock({ADVISORY_LOCK_ID})"))
                             lock_acquired = lock_result.scalar()
                             if not lock_acquired:
-                                logger.warning("Could not acquire migration lock (another process may be running migrations), waiting...")
-                                # Try blocking lock
                                 connection.execute(text(f"SELECT pg_advisory_lock({ADVISORY_LOCK_ID})"))
                                 lock_acquired = True
-                                logger.info("Migration lock acquired")
-                            else:
-                                logger.info("Migration lock acquired")
-                        except Exception as lock_error:
-                            logger.warning(f"Could not use advisory locks (non-PostgreSQL or error): {lock_error}")
-                            # Continue without lock for non-PostgreSQL databases
+                        except Exception:
+                            pass
                     
                     try:
-                        # Check if alembic_version table exists using PostgreSQL-specific query
-                        if config.DATABASE_URL.startswith("postgresql"):
-                            table_exists_result = connection.execute(text("SELECT to_regclass('public.alembic_version')"))
-                            table_exists = table_exists_result.scalar() is not None
+                        table_check = connection.execute(text("SELECT to_regclass('public.alembic_version')"))
+                        table_exists = table_check.scalar() is not None
+                    except Exception:
+                        table_exists = False
+                    
+                    if table_exists:
+                        context = MigrationContext.configure(connection)
+                        current_revision = context.get_current_revision()
+                        if current_revision == head_revision:
+                            logger.info("Migrations up to date")
                         else:
-                            # For SQLite, try to query the table
-                            try:
-                                connection.execute(text("SELECT COUNT(*) FROM alembic_version"))
-                                table_exists = True
-                            except Exception:
-                                table_exists = False
-                        
-                        if table_exists:
-                            # Table exists - get current revision using MigrationContext
-                            context = MigrationContext.configure(connection)
-                            current_revision = context.get_current_revision()
-                            logger.info(f"Current revision: {current_revision}")
-                            
-                            if current_revision == head_revision:
-                                logger.info("Migrations up to date")
-                                logger.info("Migration completed successfully")
-                            else:
-                                logger.info(f"Upgrading from {current_revision} to {head_revision}...")
-                                command.upgrade(alembic_cfg, "head")
-                                
-                                # Verify upgrade completed - use fresh connection
-                                from app.db.session import engine as verify_engine
-                                with verify_engine.connect() as verify_connection:
-                                    context = MigrationContext.configure(verify_connection)
-                                    new_revision = context.get_current_revision()
-                                    if new_revision == head_revision:
-                                        logger.info("Upgrade complete")
-                                        logger.info("Migration completed successfully")
-                                    else:
-                                        raise RuntimeError(f"Upgrade failed: expected {head_revision}, got {new_revision}")
-                        else:
-                            # Table doesn't exist - run initial migrations
-                            logger.info("Alembic version table not found, running initial migrations...")
+                            logger.info(f"Upgrading from {current_revision} to {head_revision}")
                             command.upgrade(alembic_cfg, "head")
-                            
-                            # Verify table was created and revision is set - use fresh connection
-                            from app.db.session import engine as verify_engine
-                            with verify_engine.connect() as verify_connection:
-                                # Check table exists
-                                if config.DATABASE_URL.startswith("postgresql"):
-                                    table_check = verify_connection.execute(text("SELECT to_regclass('public.alembic_version')"))
-                                    if table_check.scalar() is None:
-                                        logger.error("ERROR: alembic_version table still missing after migrations!")
-                                        raise RuntimeError("alembic_version table was not created by migrations")
-                                
-                                context = MigrationContext.configure(verify_connection)
-                                new_revision = context.get_current_revision()
-                                if new_revision == head_revision:
-                                    logger.info("Initial migrations complete")
-                                    logger.info("Migration completed successfully")
-                                else:
-                                    raise RuntimeError(f"Initial migrations failed: expected {head_revision}, got {new_revision}")
-                    except Exception as migration_error:
-                        logger.exception("Migration failed")
-                        raise
-                    finally:
-                        # Release advisory lock
-                        if lock_acquired and config.DATABASE_URL.startswith("postgresql"):
-                            try:
-                                connection.execute(text(f"SELECT pg_advisory_unlock({ADVISORY_LOCK_ID})"))
-                                logger.info("Migration lock released")
-                            except Exception:
-                                pass  # Non-critical
-                        
+                            logger.info("Migrations completed")
+                    else:
+                        logger.info("Running initial migrations")
+                        command.upgrade(alembic_cfg, "head")
+                        logger.info("Migrations completed")
+                    
+                    if lock_acquired and config.DATABASE_URL.startswith("postgresql"):
+                        try:
+                            connection.execute(text(f"SELECT pg_advisory_unlock({ADVISORY_LOCK_ID})"))
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.exception("Migration failed")
-                raise RuntimeError(f"Database migrations failed: {e}") from e
+                raise
         else:
             # Only use init_db() for local development (SQLite)
             is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
@@ -245,50 +180,19 @@ async def startup_event():
         raise
 
 # ✅ CORS — ALLOW FRONTEND ORIGINS
-# Support local dev, Vercel previews, and production domains
 import os
 
-# Get explicit allowed origins from env var (comma-separated)
-ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "")
-allowed_origins_list = [
+# Allow only specific origins
+allowed_origins = [
+    "https://hireblaze-frontend.vercel.app",
     "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",  # Next.js fallback port when 3000 is in use
-    "http://127.0.0.1:3001",
-    "http://localhost:3002",  # Next.js fallback port when 3000 and 3001 are in use
-    "http://127.0.0.1:3002",
-    "https://hireblaze-frontend.vercel.app",  # Production Vercel domain
 ]
 
-# Add origins from ALLOWED_ORIGINS env var if provided
-if ALLOWED_ORIGINS_ENV:
-    if ALLOWED_ORIGINS_ENV.strip() == "*":
-        # Wildcard means allow all origins (but cannot use credentials)
-        allowed_origins_list = ["*"]
-    else:
-        allowed_origins_list.extend([origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()])
-
-# Add common production domains from env vars
-FRONTEND_URL = os.getenv("FRONTEND_URL", "")
-if FRONTEND_URL and FRONTEND_URL not in allowed_origins_list and allowed_origins_list != ["*"]:
-    allowed_origins_list.append(FRONTEND_URL)
-
-PRODUCTION_FRONTEND_URL = os.getenv("PRODUCTION_FRONTEND_URL", "")
-if PRODUCTION_FRONTEND_URL and PRODUCTION_FRONTEND_URL not in allowed_origins_list and allowed_origins_list != ["*"]:
-    allowed_origins_list.append(PRODUCTION_FRONTEND_URL)
-
-# Handle credentials based on whether we're using wildcard
-allow_credentials = allowed_origins_list != ["*"]
-
-# Regex pattern to allow any *.vercel.app subdomain (for preview deployments)
-vercel_preview_pattern = r"^https:\/\/.*\.vercel\.app$"
-
-# Add CORS middleware BEFORE routers (so it applies to all routes and errors)
+# Add CORS middleware BEFORE routers
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins_list if allowed_origins_list != ["*"] else ["*"],
-    allow_origin_regex=vercel_preview_pattern if allowed_origins_list != ["*"] else None,
-    allow_credentials=allow_credentials,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "X-Total-Count"],
