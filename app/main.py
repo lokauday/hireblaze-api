@@ -82,32 +82,35 @@ async def startup_event():
     
     logger.info("Environment variables validated")
     
-    # Run Alembic migrations only if RUN_MIGRATIONS env var is set to true
-    # In production, migrations should be run separately (e.g., via CI/CD or manual deployment step)
-    # This keeps startup fast and avoids migration issues in production
-    run_migrations = os.getenv("RUN_MIGRATIONS", "false").lower() in ("true", "1", "yes")
+    # Run Alembic migrations if RUN_MIGRATIONS env var is set
+    run_migrations_env = os.getenv("RUN_MIGRATIONS", "").strip()
+    run_migrations = run_migrations_env.lower() in ("true", "1", "yes")
     
     if run_migrations:
+        logger.info(f"Running Alembic migrations (RUN_MIGRATIONS={run_migrations_env})...")
         try:
             from alembic.config import Config
             from alembic import command
             
             alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
             command.upgrade(alembic_cfg, "head")
-            logger.info("Alembic migrations completed")
+            logger.info("Alembic migrations completed successfully")
         except Exception as e:
-            logger.warning(f"Alembic migrations failed (non-fatal): {e}. Tables will be created via init_db() if needed.")
-            # Continue with init_db as fallback
+            logger.error(f"Alembic migrations failed: {e}", exc_info=True)
+            raise RuntimeError(f"Database migrations failed: {e}") from e
     else:
-        logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for schema initialization.")
-    
-    # Fallback: Initialize database tables (idempotent - only creates missing tables)
-    try:
-        init_db()
-        logger.info("Database initialization complete")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {e}", exc_info=True)
-        raise
+        # Only use init_db() for local development (SQLite)
+        is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
+        if not is_production and config.DATABASE_URL.startswith("sqlite"):
+            logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for local development.")
+            try:
+                init_db()
+                logger.info("Database initialization complete")
+            except Exception as e:
+                logger.error(f"Database initialization failed: {e}", exc_info=True)
+                raise
+        else:
+            logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Database schema should be managed via migrations.")
     
     # Initialize auth system (verify bcrypt/passlib is working)
     try:

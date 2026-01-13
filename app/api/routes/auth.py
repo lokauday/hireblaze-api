@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, ProgrammingError
 from pydantic import ValidationError
 import logging
 import re
@@ -419,7 +419,16 @@ async def login(request: Request, db: Session = Depends(get_db)):
         # Look up user by email with defensive error handling
         try:
             user = db.query(User).filter(User.email == email).first()
+        except ProgrammingError as db_error:
+            # Database schema error (e.g., missing column) - log full traceback
+            logger.error(
+                "Database schema error during login user lookup",
+                extra={"email": email, "error": str(db_error)},
+                exc_info=True
+            )
+            raise HTTPException(status_code=500, detail="Login failed")
         except SQLAlchemyError as db_error:
+            # Other database errors (connection, etc.)
             logger.error(
                 "Database error during login user lookup",
                 extra={"email": email, "error": str(db_error)},

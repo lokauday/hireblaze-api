@@ -36,19 +36,18 @@ logger = logging.getLogger(__name__)
 
 def init_db():
     """
-    Initialize database tables on startup.
+    Initialize database tables on startup (LOCAL/DEV ONLY).
     
     This function:
     1. Imports all models (they register with Base.metadata)
     2. Calls Base.metadata.create_all() to create tables if they don't exist
     
-    Works for both PostgreSQL (production) and SQLite (local development).
+    IMPORTANT: This should ONLY be used for local development with SQLite.
+    Production databases should use Alembic migrations (RUN_MIGRATIONS=1).
+    
     SQLAlchemy's create_all() is idempotent - it only creates missing tables.
-    
     Handles duplicate index/table errors gracefully for cases where database
-    already has some schema objects (e.g., from migrations).
-    
-    This should be called once at application startup via FastAPI's startup event.
+    already has some schema objects.
     """
     try:
         # All models are imported above, so Base.metadata contains all table definitions
