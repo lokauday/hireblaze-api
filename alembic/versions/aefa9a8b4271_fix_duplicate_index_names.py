@@ -28,89 +28,75 @@ def upgrade() -> None:
     multiple tables, causing conflicts in PostgreSQL where index names must be unique.
     This migration safely drops old indexes and creates new uniquely-named ones.
     
-    Uses try/except to gracefully handle cases where indexes may or may not exist.
+    All operations use IF EXISTS/IF NOT EXISTS to be idempotent.
     """
+    from sqlalchemy import text
+    
+    bind = op.get_bind()
+    
+    # Helper function to check if index exists
+    def index_exists(index_name: str, table_name: str) -> bool:
+        try:
+            result = bind.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_indexes 
+                    WHERE schemaname = 'public' 
+                    AND tablename = :table_name 
+                    AND indexname = :index_name
+                )
+            """), {"table_name": table_name, "index_name": index_name})
+            return result.scalar()
+        except Exception:
+            return False
+    
     # Fix interview_packs indexes: drop old, create new
-    try:
-        op.drop_index('idx_user_created', table_name='interview_packs', if_exists=True)
-    except Exception:
-        pass
-    try:
-        op.drop_index('idx_job_created', table_name='interview_packs', if_exists=True)
-    except Exception:
-        pass
-    try:
-        op.create_index('idx_interview_pack_user_created', 'interview_packs', ['user_id', 'created_at'], unique=False)
-    except Exception:
-        pass  # May already exist
-    try:
-        op.create_index('idx_interview_pack_job_created', 'interview_packs', ['job_id', 'created_at'], unique=False)
-    except Exception:
-        pass  # May already exist
+    op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_job_created"'))
+    if not index_exists('idx_interview_pack_user_created', 'interview_packs'):
+        op.execute(text('CREATE INDEX "idx_interview_pack_user_created" ON "interview_packs" ("user_id", "created_at")'))
+    if not index_exists('idx_interview_pack_job_created', 'interview_packs'):
+        op.execute(text('CREATE INDEX "idx_interview_pack_job_created" ON "interview_packs" ("job_id", "created_at")'))
     
     # Fix job_postings indexes: drop old, create new
-    try:
-        op.drop_index('idx_user_created', table_name='job_postings', if_exists=True)
-    except Exception:
-        pass
-    try:
-        op.drop_index('idx_company_title', table_name='job_postings', if_exists=True)
-    except Exception:
-        pass
-    try:
-        op.create_index('idx_job_posting_user_created', 'job_postings', ['user_id', 'created_at'], unique=False)
-    except Exception:
-        pass  # May already exist
-    try:
-        op.create_index('idx_job_posting_company_title', 'job_postings', ['company', 'title'], unique=False)
-    except Exception:
-        pass  # May already exist
+    op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_company_title"'))
+    if not index_exists('idx_job_posting_user_created', 'job_postings'):
+        op.execute(text('CREATE INDEX "idx_job_posting_user_created" ON "job_postings" ("user_id", "created_at")'))
+    if not index_exists('idx_job_posting_company_title', 'job_postings'):
+        op.execute(text('CREATE INDEX "idx_job_posting_company_title" ON "job_postings" ("company", "title")'))
     
     # Fix resumes indexes: drop old, create new
-    try:
-        op.drop_index('idx_user_created', table_name='resumes', if_exists=True)
-    except Exception:
-        pass
-    try:
-        op.create_index('idx_resume_user_created', 'resumes', ['user_id', 'created_at'], unique=False)
-    except Exception:
-        pass  # May already exist
+    op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
+    if not index_exists('idx_resume_user_created', 'resumes'):
+        op.execute(text('CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "created_at")'))
     
     # Fix outreach_messages indexes (if table exists)
     try:
-        op.drop_index('idx_job_created', table_name='outreach_messages', if_exists=True)
+        op.execute(text('DROP INDEX IF EXISTS "idx_job_created"'))
+        op.execute(text('DROP INDEX IF EXISTS "idx_user_type"'))
+        if not index_exists('idx_outreach_message_job_created', 'outreach_messages'):
+            op.execute(text('CREATE INDEX "idx_outreach_message_job_created" ON "outreach_messages" ("job_id", "created_at")'))
+        if not index_exists('idx_outreach_message_user_type', 'outreach_messages'):
+            op.execute(text('CREATE INDEX "idx_outreach_message_user_type" ON "outreach_messages" ("user_id", "type")'))
     except Exception:
         pass  # Table might not exist
-    try:
-        op.drop_index('idx_user_type', table_name='outreach_messages', if_exists=True)
-    except Exception:
-        pass  # Table might not exist
-    try:
-        op.create_index('idx_outreach_message_job_created', 'outreach_messages', ['job_id', 'created_at'], unique=False)
-    except Exception:
-        pass  # Table/index might not exist
-    try:
-        op.create_index('idx_outreach_message_user_type', 'outreach_messages', ['user_id', 'type'], unique=False)
-    except Exception:
-        pass  # Table/index might not exist
 
 
 def downgrade() -> None:
     """
     Revert index names back to original (not recommended due to conflicts).
-    This downgrade will fail if multiple tables try to use the same index name.
+    This downgrade uses IF EXISTS to be idempotent.
     """
-    # Drop new indexes
-    try:
-        op.drop_index('idx_interview_pack_user_created', table_name='interview_packs', if_exists=True)
-        op.drop_index('idx_interview_pack_job_created', table_name='interview_packs', if_exists=True)
-        op.drop_index('idx_job_posting_user_created', table_name='job_postings', if_exists=True)
-        op.drop_index('idx_job_posting_company_title', table_name='job_postings', if_exists=True)
-        op.drop_index('idx_resume_user_created', table_name='resumes', if_exists=True)
-        op.drop_index('idx_outreach_message_job_created', table_name='outreach_messages', if_exists=True)
-        op.drop_index('idx_outreach_message_user_type', table_name='outreach_messages', if_exists=True)
-    except Exception:
-        pass
+    from sqlalchemy import text
+    
+    # Drop new indexes using IF EXISTS
+    op.execute(text('DROP INDEX IF EXISTS "idx_interview_pack_user_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_interview_pack_job_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_job_posting_user_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_job_posting_company_title"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_resume_user_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_outreach_message_job_created"'))
+    op.execute(text('DROP INDEX IF EXISTS "idx_outreach_message_user_type"'))
     
     # Note: We cannot recreate the old duplicate-named indexes as they would conflict
     # This downgrade is intentionally incomplete to prevent database corruption
