@@ -83,25 +83,17 @@ async def startup_event():
         
         logger.info("Environment variables validated")
         
-        # Run Alembic migrations if RUN_MIGRATIONS env var is set
-        run_migrations_env = os.getenv("RUN_MIGRATIONS", "").strip()
-        if run_migrations_env == "1":
-            from app.db.migrate import run_migrations
-            run_migrations()
-            logger.info("Continuing startup")
-        else:
-            # Only use init_db() for local development (SQLite)
-            is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
-            if not is_production and config.DATABASE_URL.startswith("sqlite"):
-                logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for local development.")
-                try:
-                    init_db()
-                    logger.info("Database initialization complete")
-                except Exception as e:
-                    logger.error(f"Database initialization failed: {e}", exc_info=True)
-                    raise
-            else:
-                logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Database schema should be managed via migrations.")
+        # Database migrations are handled by start.sh (not in FastAPI startup)
+        # For local development with SQLite, use init_db if needed
+        is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
+        if not is_production and config.DATABASE_URL.startswith("sqlite"):
+            logger.info("Local development: initializing SQLite database")
+            try:
+                init_db()
+                logger.info("Database initialization complete")
+            except Exception as e:
+                logger.error(f"Database initialization failed: {e}", exc_info=True)
+                raise
         
         # Initialize auth system (verify bcrypt/passlib is working)
         logger.info("Initializing auth system...")
