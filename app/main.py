@@ -64,66 +64,104 @@ async def startup_event():
     import os
     from app.core import config
     
-    # Validate critical environment variables on startup
-    logger.info("Validating environment variables...")
-    
-    # Validate DATABASE_URL
-    if not config.DATABASE_URL or config.DATABASE_URL == "sqlite:///./hireblaze.db":
-        if os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT"):
-            logger.error("DATABASE_URL is not set in production environment")
-            raise ValueError("DATABASE_URL must be set in production environment")
-        else:
-            logger.warning("DATABASE_URL not set. Using SQLite for local development.")
-    
-    # Validate SECRET_KEY (already validated in config.py, but verify it's not None)
-    if not config.SECRET_KEY:
-        logger.error("SECRET_KEY is not set")
-        raise ValueError("SECRET_KEY must be set")
-    
-    logger.info("Environment variables validated")
-    
-    # Run Alembic migrations if RUN_MIGRATIONS env var is set
-    run_migrations_env = os.getenv("RUN_MIGRATIONS", "").strip()
-    run_migrations = run_migrations_env.lower() in ("true", "1", "yes")
-    
-    if run_migrations:
-        logger.info(f"Running Alembic migrations (RUN_MIGRATIONS={run_migrations_env})...")
-        try:
-            from alembic.config import Config
-            from alembic import command
-            
-            alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
-            command.upgrade(alembic_cfg, "head")
-            logger.info("Alembic migrations completed successfully")
-        except Exception as e:
-            logger.error(f"Alembic migrations failed: {e}", exc_info=True)
-            raise RuntimeError(f"Database migrations failed: {e}") from e
-    else:
-        # Only use init_db() for local development (SQLite)
-        is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
-        if not is_production and config.DATABASE_URL.startswith("sqlite"):
-            logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for local development.")
-            try:
-                init_db()
-                logger.info("Database initialization complete")
-            except Exception as e:
-                logger.error(f"Database initialization failed: {e}", exc_info=True)
-                raise
-        else:
-            logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Database schema should be managed via migrations.")
-    
-    # Initialize auth system (verify bcrypt/passlib is working)
     try:
-        from app.core.security import hash_password, verify_password, create_access_token
-        # Test password hashing to ensure bcrypt is configured correctly
-        test_hash = hash_password("test_password_123")
-        assert verify_password("test_password_123", test_hash), "Password verification failed"
-        # Test JWT token creation to ensure SECRET_KEY is valid
-        test_token = create_access_token({"sub": "test@example.com"})
-        assert test_token, "Token creation failed"
-        logger.info("Auth system initialized successfully")
+        # Validate critical environment variables on startup
+        logger.info("Validating environment variables...")
+        
+        # Validate DATABASE_URL
+        if not config.DATABASE_URL or config.DATABASE_URL == "sqlite:///./hireblaze.db":
+            if os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT"):
+                logger.error("DATABASE_URL is not set in production environment")
+                raise ValueError("DATABASE_URL must be set in production environment")
+            else:
+                logger.warning("DATABASE_URL not set. Using SQLite for local development.")
+        
+        # Validate SECRET_KEY (already validated in config.py, but verify it's not None)
+        if not config.SECRET_KEY:
+            logger.error("SECRET_KEY is not set")
+            raise ValueError("SECRET_KEY must be set")
+        
+        logger.info("Environment variables validated")
+        
+        # Run Alembic migrations if RUN_MIGRATIONS env var is set
+        run_migrations_env = os.getenv("RUN_MIGRATIONS", "").strip()
+        run_migrations = run_migrations_env.lower() in ("true", "1", "yes")
+        
+        if run_migrations:
+            logger.info(f"Checking database migrations (RUN_MIGRATIONS={run_migrations_env})...")
+            try:
+                from alembic.config import Config
+                from alembic import command
+                from alembic.script import ScriptDirectory
+                from sqlalchemy import create_engine, text
+                
+                alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
+                script = ScriptDirectory.from_config(alembic_cfg)
+                head_revision = script.get_current_head()
+                logger.info(f"Target head revision: {head_revision}")
+                
+                # Check current database revision before running migrations
+                try:
+                    from app.db.session import engine
+                    with engine.connect() as connection:
+                        result = connection.execute(text("SELECT version_num FROM alembic_version"))
+                        current_revision = result.scalar()
+                        logger.info(f"Current database revision: {current_revision}")
+                        
+                        if current_revision == head_revision:
+                            logger.info("Database is already at head revision, skipping migrations")
+                            logger.info("Migrations finished (already at head)")
+                        else:
+                            logger.info(f"Upgrading database from {current_revision} to {head_revision}...")
+                            command.upgrade(alembic_cfg, "head")
+                            logger.info("Migrations finished successfully")
+                except Exception as db_check_error:
+                    # If alembic_version table doesn't exist, run migrations anyway
+                    error_str = str(db_check_error).lower()
+                    if "alembic_version" in error_str or "relation" in error_str or "does not exist" in error_str:
+                        logger.info("Alembic version table not found, running initial migrations...")
+                        command.upgrade(alembic_cfg, "head")
+                        logger.info("Migrations finished successfully")
+                    else:
+                        logger.error(f"Error checking database revision: {db_check_error}", exc_info=True)
+                        raise
+                        
+            except Exception as e:
+                logger.error(f"Alembic migrations failed: {e}", exc_info=True)
+                raise RuntimeError(f"Database migrations failed: {e}") from e
+        else:
+            # Only use init_db() for local development (SQLite)
+            is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
+            if not is_production and config.DATABASE_URL.startswith("sqlite"):
+                logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Using init_db() for local development.")
+                try:
+                    init_db()
+                    logger.info("Database initialization complete")
+                except Exception as e:
+                    logger.error(f"Database initialization failed: {e}", exc_info=True)
+                    raise
+            else:
+                logger.info("Skipping Alembic migrations (RUN_MIGRATIONS not set). Database schema should be managed via migrations.")
+        
+        # Initialize auth system (verify bcrypt/passlib is working)
+        logger.info("Initializing auth system...")
+        try:
+            from app.core.security import hash_password, verify_password, create_access_token
+            # Test password hashing to ensure bcrypt is configured correctly
+            test_hash = hash_password("test_password_123")
+            assert verify_password("test_password_123", test_hash), "Password verification failed"
+            # Test JWT token creation to ensure SECRET_KEY is valid
+            test_token = create_access_token({"sub": "test@example.com"})
+            assert test_token, "Token creation failed"
+            logger.info("Auth system initialized successfully")
+        except Exception as e:
+            logger.error(f"Auth system initialization failed: {e}", exc_info=True)
+            raise
+        
+        logger.info("Application startup complete")
+        
     except Exception as e:
-        logger.error(f"Auth system initialization failed: {e}", exc_info=True)
+        logger.error(f"Startup failed: {e}", exc_info=True)
         raise
 
 # ✅ CORS — ALLOW FRONTEND ORIGINS
