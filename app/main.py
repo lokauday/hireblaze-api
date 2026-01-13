@@ -110,9 +110,12 @@ async def startup_event():
                 head_revision = script.get_current_head()
                 logger.info(f"Head revision: {head_revision}")
                 
+                # Set version table schema to 'public' explicitly
+                alembic_cfg.set_main_option("version_table_schema", "public")
+                
                 # Use PostgreSQL advisory lock to prevent concurrent migrations
-                # Lock ID: 123456789 (arbitrary but consistent)
-                ADVISORY_LOCK_ID = 123456789
+                # Lock ID: 987654321 (as requested)
+                ADVISORY_LOCK_ID = 987654321
                 lock_acquired = False
                 
                 with engine.connect() as connection:
@@ -123,7 +126,7 @@ async def startup_event():
                             lock_acquired = lock_result.scalar()
                             if not lock_acquired:
                                 logger.warning("Could not acquire migration lock (another process may be running migrations), waiting...")
-                                # Try blocking lock with timeout
+                                # Try blocking lock
                                 connection.execute(text(f"SELECT pg_advisory_lock({ADVISORY_LOCK_ID})"))
                                 lock_acquired = True
                                 logger.info("Migration lock acquired")
@@ -154,29 +157,46 @@ async def startup_event():
                             
                             if current_revision == head_revision:
                                 logger.info("Migrations up to date")
+                                logger.info("Migration completed successfully")
                             else:
                                 logger.info(f"Upgrading from {current_revision} to {head_revision}...")
                                 command.upgrade(alembic_cfg, "head")
                                 
-                                # Verify upgrade completed
-                                context = MigrationContext.configure(connection)
-                                new_revision = context.get_current_revision()
-                                if new_revision == head_revision:
-                                    logger.info("Upgrade complete")
-                                else:
-                                    raise RuntimeError(f"Upgrade failed: expected {head_revision}, got {new_revision}")
+                                # Verify upgrade completed - use fresh connection
+                                from app.db.session import engine as verify_engine
+                                with verify_engine.connect() as verify_connection:
+                                    context = MigrationContext.configure(verify_connection)
+                                    new_revision = context.get_current_revision()
+                                    if new_revision == head_revision:
+                                        logger.info("Upgrade complete")
+                                        logger.info("Migration completed successfully")
+                                    else:
+                                        raise RuntimeError(f"Upgrade failed: expected {head_revision}, got {new_revision}")
                         else:
                             # Table doesn't exist - run initial migrations
                             logger.info("Alembic version table not found, running initial migrations...")
                             command.upgrade(alembic_cfg, "head")
                             
-                            # Verify table was created and revision is set
-                            context = MigrationContext.configure(connection)
-                            new_revision = context.get_current_revision()
-                            if new_revision == head_revision:
-                                logger.info("Initial migrations complete")
-                            else:
-                                raise RuntimeError(f"Initial migrations failed: expected {head_revision}, got {new_revision}")
+                            # Verify table was created and revision is set - use fresh connection
+                            from app.db.session import engine as verify_engine
+                            with verify_engine.connect() as verify_connection:
+                                # Check table exists
+                                if config.DATABASE_URL.startswith("postgresql"):
+                                    table_check = verify_connection.execute(text("SELECT to_regclass('public.alembic_version')"))
+                                    if table_check.scalar() is None:
+                                        logger.error("ERROR: alembic_version table still missing after migrations!")
+                                        raise RuntimeError("alembic_version table was not created by migrations")
+                                
+                                context = MigrationContext.configure(verify_connection)
+                                new_revision = context.get_current_revision()
+                                if new_revision == head_revision:
+                                    logger.info("Initial migrations complete")
+                                    logger.info("Migration completed successfully")
+                                else:
+                                    raise RuntimeError(f"Initial migrations failed: expected {head_revision}, got {new_revision}")
+                    except Exception as migration_error:
+                        logger.exception("Migration failed")
+                        raise
                     finally:
                         # Release advisory lock
                         if lock_acquired and config.DATABASE_URL.startswith("postgresql"):
@@ -229,7 +249,7 @@ async def startup_event():
 import os
 
 # Get explicit allowed origins from env var (comma-separated)
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins_list = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -237,30 +257,38 @@ allowed_origins_list = [
     "http://127.0.0.1:3001",
     "http://localhost:3002",  # Next.js fallback port when 3000 and 3001 are in use
     "http://127.0.0.1:3002",
+    "https://hireblaze-frontend.vercel.app",  # Production Vercel domain
 ]
 
 # Add origins from ALLOWED_ORIGINS env var if provided
-if ALLOWED_ORIGINS:
-    allowed_origins_list.extend([origin.strip() for origin in ALLOWED_ORIGINS.split(",") if origin.strip()])
+if ALLOWED_ORIGINS_ENV:
+    if ALLOWED_ORIGINS_ENV.strip() == "*":
+        # Wildcard means allow all origins (but cannot use credentials)
+        allowed_origins_list = ["*"]
+    else:
+        allowed_origins_list.extend([origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()])
 
 # Add common production domains from env vars
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
-if FRONTEND_URL and FRONTEND_URL not in allowed_origins_list:
+if FRONTEND_URL and FRONTEND_URL not in allowed_origins_list and allowed_origins_list != ["*"]:
     allowed_origins_list.append(FRONTEND_URL)
 
 PRODUCTION_FRONTEND_URL = os.getenv("PRODUCTION_FRONTEND_URL", "")
-if PRODUCTION_FRONTEND_URL and PRODUCTION_FRONTEND_URL not in allowed_origins_list:
+if PRODUCTION_FRONTEND_URL and PRODUCTION_FRONTEND_URL not in allowed_origins_list and allowed_origins_list != ["*"]:
     allowed_origins_list.append(PRODUCTION_FRONTEND_URL)
 
+# Handle credentials based on whether we're using wildcard
+allow_credentials = allowed_origins_list != ["*"]
+
 # Regex pattern to allow any *.vercel.app subdomain (for preview deployments)
-# Note: This is regex ONLY, NOT in allow_origins list
 vercel_preview_pattern = r"^https:\/\/.*\.vercel\.app$"
 
+# Add CORS middleware BEFORE routers (so it applies to all routes and errors)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins_list,
-    allow_origin_regex=vercel_preview_pattern,
-    allow_credentials=True,
+    allow_origins=allowed_origins_list if allowed_origins_list != ["*"] else ["*"],
+    allow_origin_regex=vercel_preview_pattern if allowed_origins_list != ["*"] else None,
+    allow_credentials=allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "X-Total-Count"],
