@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from pydantic import ValidationError
 import logging
 import re
@@ -415,23 +416,53 @@ async def login(request: Request, db: Session = Depends(get_db)):
             )
             raise HTTPException(status_code=400, detail="Password cannot be longer than 72 bytes")
 
-        # Look up user by email
-        user = db.query(User).filter(User.email == email).first()
+        # Look up user by email with defensive error handling
+        try:
+            user = db.query(User).filter(User.email == email).first()
+        except SQLAlchemyError as db_error:
+            logger.error(
+                "Database error during login user lookup",
+                extra={"email": email, "error": str(db_error)},
+                exc_info=True
+            )
+            raise HTTPException(status_code=500, detail="Login failed")
 
+        # User not found - return 401 (not 404) for security
         if not user:
             logger.warning(f"Login attempt with non-existent email: {email}")
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
+        # User exists but has no password hash (shouldn't happen, but handle defensively)
         if not user.password_hash:
             logger.warning(f"User {user.id} has no password hash")
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        if not verify_password(password, user.password_hash):
+        # Verify password with defensive error handling
+        try:
+            password_valid = verify_password(password, user.password_hash)
+        except Exception as verify_error:
+            logger.error(
+                "Password verification error",
+                extra={"email": email, "user_id": user.id, "error": str(verify_error)},
+                exc_info=True
+            )
+            raise HTTPException(status_code=500, detail="Login failed")
+
+        if not password_valid:
             logger.warning(f"Login attempt with wrong password for: {email}")
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        logger.info(f"User logged in successfully: {user.id} ({email})")
-        token = create_access_token({"sub": user.email})
+        # Create access token with defensive error handling
+        try:
+            logger.info(f"User logged in successfully: {user.id} ({email})")
+            token = create_access_token({"sub": user.email})
+        except Exception as token_error:
+            logger.error(
+                "Token creation error",
+                extra={"email": email, "user_id": user.id, "error": str(token_error)},
+                exc_info=True
+            )
+            raise HTTPException(status_code=500, detail="Login failed")
 
         return {
             "access_token": token,
@@ -448,11 +479,12 @@ async def login(request: Request, db: Session = Depends(get_db)):
                 "has_email": has_email,
                 "has_username": has_username,
                 "has_password": has_password,
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__
             },
             exc_info=True
         )
-        raise HTTPException(status_code=500, detail="Internal server error during login")
+        raise HTTPException(status_code=500, detail="Login failed")
 
 
 # ✅ GET /auth/me - Get current user info with plan and usage
