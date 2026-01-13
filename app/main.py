@@ -119,13 +119,18 @@ async def startup_event():
 # ✅ CORS — ALLOW FRONTEND ORIGINS
 import os
 
-# Allow only specific origins
-allowed_origins = [
-    "https://hireblaze-frontend.vercel.app",
-    "http://localhost:3000",
-]
+# Get allowed origins from env var (comma-separated) or use defaults
+ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "")
+if ALLOWED_ORIGINS_ENV:
+    allowed_origins = [origin.strip() for origin in ALLOWED_ORIGINS_ENV.split(",") if origin.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://hireblaze-frontend.vercel.app",  # Production Vercel domain
+    ]
 
-# Add CORS middleware BEFORE routers
+# Add CORS middleware BEFORE routers (so it applies to all routes and errors)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -135,6 +140,12 @@ app.add_middleware(
     expose_headers=["Content-Range", "X-Total-Count"],
 )
 
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring."""
+    return {"status": "ok"}
 
 
 # ============================================

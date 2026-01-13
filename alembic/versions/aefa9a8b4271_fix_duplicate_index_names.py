@@ -69,42 +69,45 @@ def upgrade() -> None:
     # Fix interview_packs indexes: drop old, create new
     op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
     op.execute(text('DROP INDEX IF EXISTS "idx_job_created"'))
-    if not index_exists('idx_interview_pack_user_created', 'interview_packs'):
-        op.execute(text('CREATE INDEX "idx_interview_pack_user_created" ON "interview_packs" ("user_id", "created_at")'))
-    if not index_exists('idx_interview_pack_job_created', 'interview_packs'):
-        op.execute(text('CREATE INDEX "idx_interview_pack_job_created" ON "interview_packs" ("job_id", "created_at")'))
+    op.execute(text('CREATE INDEX IF NOT EXISTS "idx_interview_pack_user_created" ON "interview_packs" ("user_id", "created_at")'))
+    op.execute(text('CREATE INDEX IF NOT EXISTS "idx_interview_pack_job_created" ON "interview_packs" ("job_id", "created_at")'))
     
     # Fix job_postings indexes: drop old, create new
     op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
     op.execute(text('DROP INDEX IF EXISTS "idx_company_title"'))
-    if not index_exists('idx_job_posting_user_created', 'job_postings'):
-        op.execute(text('CREATE INDEX "idx_job_posting_user_created" ON "job_postings" ("user_id", "created_at")'))
-    if not index_exists('idx_job_posting_company_title', 'job_postings'):
-        op.execute(text('CREATE INDEX "idx_job_posting_company_title" ON "job_postings" ("company", "title")'))
+    op.execute(text('CREATE INDEX IF NOT EXISTS "idx_job_posting_user_created" ON "job_postings" ("user_id", "created_at")'))
+    op.execute(text('CREATE INDEX IF NOT EXISTS "idx_job_posting_company_title" ON "job_postings" ("company", "title")'))
     
     # Fix resumes indexes: drop old, create new
     op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
+    
+    # Ensure resumes.created_at column exists before creating index
+    if not column_exists('resumes', 'created_at'):
+        logger.info('Adding created_at column to resumes table')
+        op.execute(text("""
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'resumes' 
+                    AND column_name = 'created_at'
+                ) THEN
+                    ALTER TABLE resumes ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT now();
+                END IF;
+            END $$;
+        """))
+    
+    # Create index with IF NOT EXISTS (idempotent)
     if not index_exists('idx_resume_user_created', 'resumes'):
-        # Find the timestamp column to use (created_at, uploaded_at, etc.)
-        timestamp_col = None
-        for col_name in ['created_at', 'uploaded_at', 'created_on']:
-            if column_exists('resumes', col_name):
-                timestamp_col = col_name
-                break
-        
-        if timestamp_col:
-            op.execute(text(f'CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "{timestamp_col}")'))
-        else:
-            logger.warning('Skipping idx_resume_user_created: no timestamp column (created_at, uploaded_at, created_on) found in resumes table')
+        op.execute(text('CREATE INDEX IF NOT EXISTS "idx_resume_user_created" ON "resumes" ("user_id", "created_at")'))
     
     # Fix outreach_messages indexes (if table exists)
     try:
         op.execute(text('DROP INDEX IF EXISTS "idx_job_created"'))
         op.execute(text('DROP INDEX IF EXISTS "idx_user_type"'))
-        if not index_exists('idx_outreach_message_job_created', 'outreach_messages'):
-            op.execute(text('CREATE INDEX "idx_outreach_message_job_created" ON "outreach_messages" ("job_id", "created_at")'))
-        if not index_exists('idx_outreach_message_user_type', 'outreach_messages'):
-            op.execute(text('CREATE INDEX "idx_outreach_message_user_type" ON "outreach_messages" ("user_id", "type")'))
+        op.execute(text('CREATE INDEX IF NOT EXISTS "idx_outreach_message_job_created" ON "outreach_messages" ("job_id", "created_at")'))
+        op.execute(text('CREATE INDEX IF NOT EXISTS "idx_outreach_message_user_type" ON "outreach_messages" ("user_id", "type")'))
     except Exception:
         pass  # Table might not exist
 
