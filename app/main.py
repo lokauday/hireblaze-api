@@ -93,41 +93,101 @@ async def startup_event():
                 from alembic.config import Config
                 from alembic import command
                 from alembic.script import ScriptDirectory
-                from sqlalchemy import create_engine, text
+                from alembic.runtime.migration import MigrationContext
+                from sqlalchemy import text
+                from app.db.session import engine
+                from urllib.parse import urlparse
+                
+                # Log database connection info (safe - no passwords)
+                try:
+                    parsed_db_url = urlparse(config.DATABASE_URL)
+                    logger.info(f"Database: {parsed_db_url.hostname}:{parsed_db_url.port or 'default'}/{parsed_db_url.path.lstrip('/')}")
+                except Exception:
+                    pass  # Non-critical logging
                 
                 alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
                 script = ScriptDirectory.from_config(alembic_cfg)
                 head_revision = script.get_current_head()
-                logger.info(f"Target head revision: {head_revision}")
+                logger.info(f"Head revision: {head_revision}")
                 
-                # Check current database revision before running migrations
-                try:
-                    from app.db.session import engine
-                    with engine.connect() as connection:
-                        result = connection.execute(text("SELECT version_num FROM alembic_version"))
-                        current_revision = result.scalar()
-                        logger.info(f"Current database revision: {current_revision}")
-                        
-                        if current_revision == head_revision:
-                            logger.info("Database is already at head revision, skipping migrations")
-                            logger.info("Migrations finished (already at head)")
+                # Use PostgreSQL advisory lock to prevent concurrent migrations
+                # Lock ID: 123456789 (arbitrary but consistent)
+                ADVISORY_LOCK_ID = 123456789
+                lock_acquired = False
+                
+                with engine.connect() as connection:
+                    # Try to acquire advisory lock (PostgreSQL only)
+                    if config.DATABASE_URL.startswith("postgresql"):
+                        try:
+                            lock_result = connection.execute(text(f"SELECT pg_try_advisory_lock({ADVISORY_LOCK_ID})"))
+                            lock_acquired = lock_result.scalar()
+                            if not lock_acquired:
+                                logger.warning("Could not acquire migration lock (another process may be running migrations), waiting...")
+                                # Try blocking lock with timeout
+                                connection.execute(text(f"SELECT pg_advisory_lock({ADVISORY_LOCK_ID})"))
+                                lock_acquired = True
+                                logger.info("Migration lock acquired")
+                            else:
+                                logger.info("Migration lock acquired")
+                        except Exception as lock_error:
+                            logger.warning(f"Could not use advisory locks (non-PostgreSQL or error): {lock_error}")
+                            # Continue without lock for non-PostgreSQL databases
+                    
+                    try:
+                        # Check if alembic_version table exists using PostgreSQL-specific query
+                        if config.DATABASE_URL.startswith("postgresql"):
+                            table_exists_result = connection.execute(text("SELECT to_regclass('public.alembic_version')"))
+                            table_exists = table_exists_result.scalar() is not None
                         else:
-                            logger.info(f"Upgrading database from {current_revision} to {head_revision}...")
+                            # For SQLite, try to query the table
+                            try:
+                                connection.execute(text("SELECT COUNT(*) FROM alembic_version"))
+                                table_exists = True
+                            except Exception:
+                                table_exists = False
+                        
+                        if table_exists:
+                            # Table exists - get current revision using MigrationContext
+                            context = MigrationContext.configure(connection)
+                            current_revision = context.get_current_revision()
+                            logger.info(f"Current revision: {current_revision}")
+                            
+                            if current_revision == head_revision:
+                                logger.info("Migrations up to date")
+                            else:
+                                logger.info(f"Upgrading from {current_revision} to {head_revision}...")
+                                command.upgrade(alembic_cfg, "head")
+                                
+                                # Verify upgrade completed
+                                context = MigrationContext.configure(connection)
+                                new_revision = context.get_current_revision()
+                                if new_revision == head_revision:
+                                    logger.info("Upgrade complete")
+                                else:
+                                    raise RuntimeError(f"Upgrade failed: expected {head_revision}, got {new_revision}")
+                        else:
+                            # Table doesn't exist - run initial migrations
+                            logger.info("Alembic version table not found, running initial migrations...")
                             command.upgrade(alembic_cfg, "head")
-                            logger.info("Migrations finished successfully")
-                except Exception as db_check_error:
-                    # If alembic_version table doesn't exist, run migrations anyway
-                    error_str = str(db_check_error).lower()
-                    if "alembic_version" in error_str or "relation" in error_str or "does not exist" in error_str:
-                        logger.info("Alembic version table not found, running initial migrations...")
-                        command.upgrade(alembic_cfg, "head")
-                        logger.info("Migrations finished successfully")
-                    else:
-                        logger.error(f"Error checking database revision: {db_check_error}", exc_info=True)
-                        raise
+                            
+                            # Verify table was created and revision is set
+                            context = MigrationContext.configure(connection)
+                            new_revision = context.get_current_revision()
+                            if new_revision == head_revision:
+                                logger.info("Initial migrations complete")
+                            else:
+                                raise RuntimeError(f"Initial migrations failed: expected {head_revision}, got {new_revision}")
+                    finally:
+                        # Release advisory lock
+                        if lock_acquired and config.DATABASE_URL.startswith("postgresql"):
+                            try:
+                                connection.execute(text(f"SELECT pg_advisory_unlock({ADVISORY_LOCK_ID})"))
+                                logger.info("Migration lock released")
+                            except Exception:
+                                pass  # Non-critical
                         
             except Exception as e:
-                logger.error(f"Alembic migrations failed: {e}", exc_info=True)
+                logger.exception("Migration failed")
                 raise RuntimeError(f"Database migrations failed: {e}") from e
         else:
             # Only use init_db() for local development (SQLite)
