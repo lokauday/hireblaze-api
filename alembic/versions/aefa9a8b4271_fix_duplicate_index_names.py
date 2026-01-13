@@ -85,11 +85,17 @@ def upgrade() -> None:
     # Fix resumes indexes: drop old, create new
     op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
     if not index_exists('idx_resume_user_created', 'resumes'):
-        # Check if created_at column exists before creating index
-        if column_exists('resumes', 'created_at'):
-            op.execute(text('CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "created_at")'))
+        # Find the timestamp column to use (created_at, uploaded_at, etc.)
+        timestamp_col = None
+        for col_name in ['created_at', 'uploaded_at', 'created_on']:
+            if column_exists('resumes', col_name):
+                timestamp_col = col_name
+                break
+        
+        if timestamp_col:
+            op.execute(text(f'CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "{timestamp_col}")'))
         else:
-            logger.warning('Skipping idx_resume_user_created: column resumes.created_at does not exist')
+            logger.warning('Skipping idx_resume_user_created: no timestamp column (created_at, uploaded_at, created_on) found in resumes table')
     
     # Fix outreach_messages indexes (if table exists)
     try:
