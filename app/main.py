@@ -85,65 +85,10 @@ async def startup_event():
         
         # Run Alembic migrations if RUN_MIGRATIONS env var is set
         run_migrations_env = os.getenv("RUN_MIGRATIONS", "").strip()
-        run_migrations = run_migrations_env.lower() in ("true", "1", "yes")
-        
-        if run_migrations:
-            logger.info("Running database migrations...")
-            try:
-                from alembic.config import Config
-                from alembic import command
-                from alembic.script import ScriptDirectory
-                from alembic.runtime.migration import MigrationContext
-                from sqlalchemy import text
-                from app.db.session import engine
-                
-                alembic_cfg = Config(os.path.join(os.path.dirname(os.path.dirname(__file__)), "alembic.ini"))
-                alembic_cfg.set_main_option("version_table_schema", "public")
-                script = ScriptDirectory.from_config(alembic_cfg)
-                head_revision = script.get_current_head()
-                
-                ADVISORY_LOCK_ID = 987654321
-                lock_acquired = False
-                
-                with engine.begin() as connection:
-                    if config.DATABASE_URL.startswith("postgresql"):
-                        try:
-                            lock_result = connection.execute(text(f"SELECT pg_try_advisory_lock({ADVISORY_LOCK_ID})"))
-                            lock_acquired = lock_result.scalar()
-                            if not lock_acquired:
-                                connection.execute(text(f"SELECT pg_advisory_lock({ADVISORY_LOCK_ID})"))
-                                lock_acquired = True
-                        except Exception:
-                            pass
-                    
-                    try:
-                        table_check = connection.execute(text("SELECT to_regclass('public.alembic_version')"))
-                        table_exists = table_check.scalar() is not None
-                    except Exception:
-                        table_exists = False
-                    
-                    if table_exists:
-                        context = MigrationContext.configure(connection)
-                        current_revision = context.get_current_revision()
-                        if current_revision == head_revision:
-                            logger.info("Migrations up to date")
-                        else:
-                            logger.info(f"Upgrading from {current_revision} to {head_revision}")
-                            command.upgrade(alembic_cfg, "head")
-                            logger.info("Migrations completed")
-                    else:
-                        logger.info("Running initial migrations")
-                        command.upgrade(alembic_cfg, "head")
-                        logger.info("Migrations completed")
-                    
-                    if lock_acquired and config.DATABASE_URL.startswith("postgresql"):
-                        try:
-                            connection.execute(text(f"SELECT pg_advisory_unlock({ADVISORY_LOCK_ID})"))
-                        except Exception:
-                            pass
-            except Exception as e:
-                logger.exception("Migration failed")
-                raise
+        if run_migrations_env == "1":
+            from app.db.migrate import run_migrations
+            run_migrations()
+            logger.info("Continuing startup")
         else:
             # Only use init_db() for local development (SQLite)
             is_production = os.getenv("ENVIRONMENT") == "production" or os.getenv("RAILWAY_ENVIRONMENT")
