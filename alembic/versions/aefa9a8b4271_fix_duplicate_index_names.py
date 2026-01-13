@@ -31,7 +31,9 @@ def upgrade() -> None:
     All operations use IF EXISTS/IF NOT EXISTS to be idempotent.
     """
     from sqlalchemy import text
+    import logging
     
+    logger = logging.getLogger(__name__)
     bind = op.get_bind()
     
     # Helper function to check if index exists
@@ -45,6 +47,21 @@ def upgrade() -> None:
                     AND indexname = :index_name
                 )
             """), {"table_name": table_name, "index_name": index_name})
+            return result.scalar()
+        except Exception:
+            return False
+    
+    # Helper function to check if column exists
+    def column_exists(table_name: str, column_name: str) -> bool:
+        try:
+            result = bind.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_schema = 'public' 
+                    AND table_name = :table_name 
+                    AND column_name = :column_name
+                )
+            """), {"table_name": table_name, "column_name": column_name})
             return result.scalar()
         except Exception:
             return False
@@ -68,7 +85,11 @@ def upgrade() -> None:
     # Fix resumes indexes: drop old, create new
     op.execute(text('DROP INDEX IF EXISTS "idx_user_created"'))
     if not index_exists('idx_resume_user_created', 'resumes'):
-        op.execute(text('CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "created_at")'))
+        # Check if created_at column exists before creating index
+        if column_exists('resumes', 'created_at'):
+            op.execute(text('CREATE INDEX "idx_resume_user_created" ON "resumes" ("user_id", "created_at")'))
+        else:
+            logger.warning('Skipping idx_resume_user_created: column resumes.created_at does not exist')
     
     # Fix outreach_messages indexes (if table exists)
     try:
